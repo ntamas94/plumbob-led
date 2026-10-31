@@ -129,6 +129,7 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         adapter = ((BluetoothManager) getSystemService(BLUETOOTH_SERVICE)).getAdapter();
         names = getSharedPreferences("names", MODE_PRIVATE);
+        ignore.addAll(names.getStringSet("ignore", Collections.emptySet()));
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         LinearLayout root = new LinearLayout(this);
@@ -399,7 +400,7 @@ public class MainActivity extends Activity {
         Button unIgnore = new Button(this);
         unIgnore.setText("Elengedettek vissza");
         unIgnore.setAllCaps(false);
-        unIgnore.setOnClickListener(v -> { names.edit().remove("ignore").apply(); scan(); Toast.makeText(this, "Minden lámpa újra felvehető", Toast.LENGTH_SHORT).show(); });
+        unIgnore.setOnClickListener(v -> { ignore.clear(); names.edit().remove("ignore").apply(); scan(); Toast.makeText(this, "Minden lámpa újra felvehető", Toast.LENGTH_SHORT).show(); });
         settings.addView(unIgnore);
 
         Button upd = new Button(this);
@@ -468,6 +469,7 @@ public class MainActivity extends Activity {
         stopService(new Intent(this, KeepAliveService.class));
         start();
         if (pulse && pulser == null) setPulse(true);
+        if (decay != null) { ui.removeCallbacks(decay); ui.postDelayed(decay, 30000); }   // disconnectAll() dropped its timer
         if (!autoChecked) { autoChecked = true; ui.postDelayed(() -> checkUpdate(true), 3000); }   // once per launch, quietly
     }
 
@@ -610,11 +612,23 @@ public class MainActivity extends Activity {
         return "Valaki";
     }
 
+    /** Index of a wearer in PEOPLE, -1 for none; no allocation (called from the animation tick's sort). */
+    static int personIdx(String p) {
+        if (p != null) for (int i = 0; i < PEOPLE.length; i++) if (PEOPLE[i].equals(p)) return i;
+        return -1;
+    }
+
     /** Bit i set when PEOPLE[i] has a lamp on this phone. */
     int myMask() {
         int m = 0;
-        for (Bob b : bobs.values()) { int i = b.person == null ? -1 : Arrays.asList(PEOPLE).indexOf(b.person); if (i >= 0) m |= 1 << i; }
+        for (Bob b : bobs.values()) { int i = personIdx(b.person); if (i >= 0) m |= 1 << i; }
         return m;
+    }
+
+    /** Power on and set brightness (unless the pulse is driving it): the start of every colour change. */
+    void wake(Bob b) {
+        enqueue(b, Proto.on(b.fam));
+        if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness));
     }
 
     @SuppressWarnings("MissingPermission")
@@ -636,7 +650,6 @@ public class MainActivity extends Activity {
         p[0] = (byte) type; p[1] = (byte) idx; p[2] = (byte) (nonce >> 8); p[3] = (byte) nonce; p[4] = (byte) myMask();
         p[5] = (byte) base[0]; p[6] = (byte) base[1]; p[7] = (byte) base[2];   // the colour the chase runs in
         System.arraycopy(name, 0, p, 8, p.length - 8);
-        fastInviteScan();   // for the next 30 s listen closely for accepts / roster beacons
         AdvertiseSettings s = new AdvertiseSettings.Builder().setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH).setConnectable(false).setTimeout(ms).build();
         AdvertiseData d = new AdvertiseData.Builder().setIncludeDeviceName(false).addManufacturerData(COMPANY, p).build();
@@ -650,33 +663,20 @@ public class MainActivity extends Activity {
     };
     final AdvertiseCallback acceptAdvCb = new AdvertiseCallback() { };
 
-    // Scan with a hardware filter on our manufacturer id; low power while idle, low latency around a group session.
+    // Beacon scan with a hardware filter on our manufacturer id, low latency while the app is up: beacons last
+    // seconds and a low-power scan listens only 0.5 s in 5. Started once per start(), stopped in disconnectAll().
     @SuppressWarnings("MissingPermission")
-    void startInviteScan() { startInviteScan(false); }
-
-    @SuppressWarnings("MissingPermission")
-    void startInviteScan(boolean fast) {
+    void startInviteScan() {
         BluetoothLeScanner sc = adapter.getBluetoothLeScanner();
-        if (sc == null) return;
-        if (inviteScanning) sc.stopScan(inviteCb);
+        if (sc == null || inviteScanning) return;
         ScanFilter f = new ScanFilter.Builder().setManufacturerData(COMPANY, new byte[0]).build();   // any of our beacons
-        // Always low latency while the app is up: beacons last seconds and a low-power scan listens only 0.5 s in 5.
         ScanSettings s = new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
         sc.startScan(Collections.singletonList(f), s, inviteCb);
         inviteScanning = true;
     }
 
-    final Runnable slowScan = () -> { if (inviteScanning) startInviteScan(false); };
-
-    void fastInviteScan() {
-        startInviteScan(true);
-        ui.removeCallbacks(slowScan);
-        ui.postDelayed(slowScan, 30000);
-    }
-
     @SuppressWarnings("MissingPermission")
     void stopInviteScan() {
-        ui.removeCallbacks(slowScan);
         if (!inviteScanning) return;
         inviteScanning = false;
         BluetoothLeScanner sc = adapter.getBluetoothLeScanner();
@@ -802,7 +802,7 @@ public class MainActivity extends Activity {
                 if (n == null) n = d.getName();   // cached/bonded name as fallback
                 seen.add(n == null ? "(névtelen " + d.getAddress().substring(12) + ")" : n);
                 seenView.setText("Látott: " + seen);
-                if (n == null || !n.toUpperCase().startsWith("LED") || !visible || bobs.containsKey(d.getAddress()) || ignored(d.getAddress())) return;
+                if (n == null || !n.toUpperCase().startsWith("LED") || !visible || bobs.containsKey(d.getAddress()) || ignore.contains(d.getAddress())) return;
                 Bob b = new Bob();
                 b.name = n;
                 b.dev = d;
@@ -1023,6 +1023,7 @@ public class MainActivity extends Activity {
                 e.apply();
                 b.lbl.setText(label(b));
                 rebuildWho();
+                showHp(false);
             }).show();
         });
         b.row.addView(whoBtn);
@@ -1038,9 +1039,8 @@ public class MainActivity extends Activity {
     /** Disconnect the lamp and ignore it on this phone until "Elengedettek vissza"; another phone can take it. */
     @SuppressWarnings("MissingPermission")
     void release(Bob b) {
-        java.util.Set<String> ign = new java.util.HashSet<>(names.getStringSet("ignore", new java.util.HashSet<>()));
-        ign.add(b.dev.getAddress());
-        names.edit().putStringSet("ignore", ign).apply();
+        ignore.add(b.dev.getAddress());
+        names.edit().putStringSet("ignore", new HashSet<>(ignore)).apply();
         if (b.gatt != null) b.gatt.close();
         bobs.remove(b.dev.getAddress());
         toConnect.remove(b);
@@ -1053,7 +1053,7 @@ public class MainActivity extends Activity {
         connectNext();
     }
 
-    boolean ignored(String mac) { return names.getStringSet("ignore", new java.util.HashSet<>()).contains(mac); }
+    final Set<String> ignore = new HashSet<>();   // MACs released to other phones (persisted under "ignore")
 
     // One write in flight per lamp; the next frame goes out when the lamp has acknowledged the previous one.
     void enqueue(Bob b, byte[] frame) {
@@ -1081,8 +1081,7 @@ public class MainActivity extends Activity {
     void moodFrames(Bob b, String m) {
         b.fadeId++;
         if ("off".equals(m)) { enqueue(b, Proto.off(b.fam)); b.cur = new int[]{0, 0, 0}; return; }
-        enqueue(b, Proto.on(b.fam));
-        if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness));
+        wake(b);
         if ("rainbow".equals(m)) enqueue(b, Proto.mode(b.fam, b.fam == Proto.SMART ? 1 : 138));   // 138 = seven-colour gradient
         else if (m.startsWith("fx:")) { enqueue(b, Proto.mode(b.fam, Integer.parseInt(m.substring(3)))); enqueue(b, Proto.speed(b.fam, speed)); }
         else if (m.startsWith("anim:")) { /* the running animation feeds the colours */ }
@@ -1116,8 +1115,7 @@ public class MainActivity extends Activity {
         b.queue.clear();
         final int ep = ++epoch;
         if (anim != null) stopAnim();
-        enqueue(b, Proto.on(b.fam));
-        if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness));
+        wake(b);
         enqueue(b, Proto.rgb(b.fam, 255, 255, 255));
         ui.postDelayed(() -> { if (ep != epoch || b.ch == null) return; b.cur = new int[]{255, 255, 255}; moodFrames(b, "hp"); }, 200);
         showHp(false);
@@ -1147,7 +1145,7 @@ public class MainActivity extends Activity {
     // Finger lands on the scale: stop whatever runs and make sure the lamps are on.
     void slideStart() {
         fresh();
-        for (Bob b : selected()) { enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
+        for (Bob b : selected()) wake(b);
     }
 
     // Dragging: at most ~8 colour frames a second, the final position always goes out.
@@ -1167,12 +1165,12 @@ public class MainActivity extends Activity {
 
     void stopAnim() { if (anim != null) { ui.removeCallbacks(anim); anim = null; } stopMic(); }
 
-    // Every switch: new epoch, no leftover frames in the lamp queues, no running fades.
+    // Every switch: new epoch, no leftover frames in the targeted lamps' queues, no running fades on them.
     void fresh() {
         epoch++;
         stopAnim();
         if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
-        for (Bob b : bobs.values()) { b.fadeId++; b.queue.clear(); }
+        for (Bob b : selected()) { b.fadeId++; b.queue.clear(); }
     }
 
     // One animation at a time; each tick sends one colour frame to every selected lamp (skipped if its queue is backed up).
@@ -1181,9 +1179,9 @@ public class MainActivity extends Activity {
         groupMode = false;   // a plain tap runs the chase over this phone's own lamps; invitations switch group mode on
         curNonce = 0;        // games use it as their random seed; a group session sets it from the invitation
         mood = "anim:" + idx;
-        for (Bob b : selected()) { enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
+        for (Bob b : selected()) wake(b);
         animStep = 0;
-        animWait = idx < MULTI ? animFrame(idx, 0)[3] : 0;   // fixed-period animations can be clock-synced in a group
+        animWait = idx < MULTI ? animFrame(idx, 0)[3] : multiFrame(idx, 0, 0, 1)[3];   // the tick period (fixed for most)
         if (idx == MIC) {
             anim = () -> { };   // marker so onStop keeps the connections alive; the mic thread does the work
             startMic();
@@ -1194,9 +1192,9 @@ public class MainActivity extends Activity {
                 List<Bob> sel = ordered();
                 int total = Math.max(1, sel.size());
                 // Shared animations: in a group session the step comes from the clock so phones flash together.
-                int sharedStep = groupMode && animWait > 0 ? (int) ((System.currentTimeMillis() / animWait) % 1000000) : animStep;
+                int sharedStep = groupMode ? (int) ((System.currentTimeMillis() / animWait) % 1000000) : animStep;
                 int[] shared = idx < MULTI ? animFrame(idx, sharedStep) : null;   // {r, g, b, wait ms}, same for every lamp
-                int wait = shared != null ? shared[3] : multiFrame(idx, 0, 0, 1)[3];
+                int wait = shared != null ? shared[3] : animWait;
                 // Group mode (after an invitation): named lamps take their wearer's slot of 4 and the clock's step,
                 // so several phones run one chase; slots of people who are not in stay dark.
                 boolean group = shared == null && groupMode;
@@ -1227,7 +1225,7 @@ public class MainActivity extends Activity {
     }
 
     int rank(Bob b) {
-        int i = b.person == null ? -1 : Arrays.asList(PEOPLE).indexOf(b.person);
+        int i = personIdx(b.person);
         return i < 0 ? 99 : i;
     }
 
@@ -1421,7 +1419,7 @@ public class MainActivity extends Activity {
     void levelUp() {
         fresh();
         mood = "green";
-        for (Bob b : selected()) { enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
+        for (Bob b : selected()) wake(b);
         levelup = new Runnable() {
             int step = 0;
             public void run() {
@@ -1451,9 +1449,11 @@ public class MainActivity extends Activity {
     void disconnectAll() {
         stopScan();
         stopInviteScan();
+        stopMic();
         ui.removeCallbacksAndMessages(null);
         levelup = null;
         anim = null;
+        pulser = null;
         connecting = null;
         toConnect.clear();
         for (Bob b : bobs.values()) if (b.gatt != null) b.gatt.close();
