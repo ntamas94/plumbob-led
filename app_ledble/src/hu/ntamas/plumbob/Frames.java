@@ -16,16 +16,20 @@ final class Frames {
         {"Magyar zászló", "#DDFFDD"}, {"Tévé", "#AACCFF"}, {"Éhező Sim", "#CCDD55"}, {"Kaszás", "#999999"},
         {"Aurora", "#88DDAA"}, {"Óceán", "#66BBFF"}, {"Láva", "#FF5522"}, {"Napfelkelte", "#FFD9A0"}, {"Szentjánosbogár", "#EEFFAA"},
         {"Rendőr", "#9999FF"}, {"Neon", "#FF66FF"}, {"Radioaktív", "#AAFF33"}, {"Jégkristály", "#CCF0FF"}, {"Rózsaszirom", "#FFC0DD"},
+        {"Vihar", "#8899BB"}, {"Csillagos ég", "#EEEEFF"}, {"Naplemente", "#FFAA66"}, {"Cukorka", "#FFB3E6"}, {"Mátrix", "#55FF55"},
+        {"Hóesés", "#F0F8FF"}, {"Pokol", "#FF3300"}, {"Szivárvány-lélegzés", "#DDBBFF"},
         {"Futófény (csoport)", "#FFFFAA"}, {"Pingpong (csoport)", "#AAFFFF"}, {"Hullám (csoport)", "#FFAAFF"},
         {"Forró krumpli (játék)", "#FFB347"}, {"Szerencsekerék (játék)", "#FFD700"}, {"Tűzijáték (csoport)", "#FF99CC"},
         {"Csóva (csoport)", "#FFE0AA"}, {"Szívverés-lánc (csoport)", "#FF8888"}, {"Robbanás (csoport)", "#FFCC88"},
         {"Cikk-cakk (csoport)", "#CCFFCC"}, {"Alvó plumbobok (csoport)", "#AADDAA"}, {"Színkör-forgás (csoport)", "#FFDDFF"},
         {"Visszaszámlálás (csoport)", "#FFFFFF"}, {"Zászló-lánc (csoport)", "#DDEEFF"},
         {"Vírus (játék)", "#CC88FF"}, {"Simon mondja (játék)", "#AAFFEE"}, {"Kakukktojás (játék)", "#FFEEAA"},
+        {"Lépcső (csoport)", "#FFEECC"}, {"Fogócska (csoport)", "#FFCCAA"}, {"Tengeri hullám (csoport)", "#99CCFF"},
+        {"Pingpong-szivárvány (csoport)", "#EECCFF"}, {"Körforgó-villanás (csoport)", "#FFFFCC"}, {"Metronóm (csoport)", "#CCCCCC"},
         {"Zene (mikrofon)", "#FFEE88"},
     };
-    static final int MULTI = 31;   // first per-lamp animation
-    static final int MIC = 48;     // microphone-driven, handled outside this class
+    static final int MULTI = 39;   // first per-lamp animation
+    static final int MIC = 62;     // microphone-driven, handled outside this class
     static final int REAPER = 20;  // "Kaszás", shown when a wearer's life points hit zero
 
     static boolean isPerLamp(int idx) { return idx >= MULTI && idx < MIC; }
@@ -90,7 +94,23 @@ final class Frames {
             }
             case 28: return r(nonce, n, 15, 100) < 15 ? frame(120, 255, 0, 60) : scaled(frame(40, 255, 0, 100), 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(n / 6.0))); // Radioaktív
             case 29: return r(nonce, n, 16, 100) < 12 ? frame(255, 255, 255, 60) : frame(60, 110, 128, 120); // Jégkristály
-            default: return breathing(255, 120, 180, 0.2, n / 10.0, 100);                                // Rózsaszirom
+            case 30: return breathing(255, 120, 180, 0.2, n / 10.0, 100);                                // Rózsaszirom
+            case 31: {  // Vihar: dark blue rain with lightning bursts (two quick white strikes)
+                int t = n % 60;
+                if (t == 20 || t == 22) return frame(255, 255, 255, 50);
+                return frame(5, 10 + r(nonce, n, 17, 15), 40 + r(nonce, n, 18, 30), 120);
+            }
+            case 32: return r(nonce, n, 19, 100) < 8 ? frame(200, 200, 255, 90) : frame(8, 8, 20, 180);   // Csillagos ég
+            case 33: {  // Naplemente: 40 s from daylight to night, 20 s night
+                int t = n % 600;
+                if (t >= 400) return frame(2, 0, 6, 100);
+                return withHold(ramp(SUNRISE, 1f - t / 400f), 100);
+            }
+            case 34: return scaled(hsv(r(nonce, n / 6, 20, 360), 100), 0.6);                             // Cukorka: pastel hue every 600 ms
+            case 35: return r(nonce, n, 21, 100) < 30 ? frame(0, 255, 60, 70) : frame(0, 40 + r(nonce, n, 22, 60), 10, 70); // Mátrix
+            case 36: return r(nonce, n, 23, 100) < 10 ? frame(255, 255, 255, 120) : frame(90, 110, 140, 160); // Hóesés
+            case 37: return frame(255, r(nonce, n, 24, 25), 0, 60 + r(nonce, n, 25, 60));               // Pokol: angry red flicker
+            default: return scaled(hsv((n * 4) % 360, 100), 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(n / 10.0))); // Szivárvány-lélegzés
         }
     }
 
@@ -182,6 +202,34 @@ final class Frames {
                 return simon(n, k, total, nonce);
             case MULTI + 16:    // Kakukktojás
                 return oddOneOut(n, k, total, nonce);
+            case MULTI + 17: {  // Lépcső: lamps come on one by one, then go off one by one
+                int t = n % (2 * total);
+                boolean on = t < total ? k <= t : k > t - total;
+                return on ? withHold(base, 350) : frame(0, 0, 0, 350);
+            }
+            case MULTI + 18: {  // Fogócska: a red chaser runs after a blue runner half a lap ahead
+                int runner = n % total, chaser = (n + total / 2) % total;
+                if (k == runner) return frame(0, 80, 255, 220);
+                if (k == chaser) return frame(255, 30, 0, 220);
+                return frame(0, 0, 0, 220);
+            }
+            case MULTI + 19: {  // Tengeri hullám: blue swell travelling down the line, white foam on the crest
+                double ph = n / 4.0 - k * 1.2;
+                double lv = 0.5 + 0.5 * Math.sin(ph);
+                if (lv > 0.95) return frame(220, 240, 255, 120);
+                return scaled(frame(0, 90, 255, 120), 0.2 + 0.8 * lv);
+            }
+            case MULTI + 20: {  // Pingpong-szivárvány: the bouncing lamp changes hue on every bounce
+                int span = Math.max(1, 2 * total - 2), p = n % span, lit = p < total ? p : span - p;
+                return k == lit ? hsv((n / span * 50) % 360, 250) : frame(0, 0, 0, 250);
+            }
+            case MULTI + 21: {  // Körforgó-villanás: a quick white flash runs round, base colour everywhere else
+                return k == n % total ? frame(255, 255, 255, 120) : scaled(withHold(base, 120), 0.4);
+            }
+            case MULTI + 22: {  // Metronóm: left end, right end, left end... in the base colour
+                int end = n % 2 == 0 ? 0 : total - 1;
+                return k == end ? withHold(base, 500) : frame(0, 0, 0, 500);
+            }
             default:
                 return frame(0, 0, 0, 300);
         }
