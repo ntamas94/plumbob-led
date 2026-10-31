@@ -130,6 +130,10 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     final Map<String, Integer> hpByMac = new HashMap<>();   // survives onStop/onStart (lamps are re-discovered as new objects)
     boolean autoChecked;
 
+    // Colour correction for this string's strong green/blue LEDs (percent of the requested value), applied in setColour()
+    int gainG = 100, gainB = 100;
+    final int[] custom = {0, 255, 0};   // the "Saját szín" sliders
+
     // ---------------------------------------------------------------- lifecycle
 
     @Override
@@ -137,6 +141,8 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         super.onCreate(state);
         adapter = ((BluetoothManager) getSystemService(BLUETOOTH_SERVICE)).getAdapter();
         prefs = getSharedPreferences("names", MODE_PRIVATE);
+        gainG = prefs.getInt("gainG", 100);
+        gainB = prefs.getInt("gainB", 100);
         link = new LampLink(this, adapter, ui, prefs, this);
         beacons = new Beacons(adapter, ui, this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -260,7 +266,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         root.addView(status);
         root.addView(buildWhoRow());
 
-        String[] tabNames = {"Hangulat", "Effekt", "Anim", "Életerő", "Beáll."};
+        String[] tabNames = {"Hangulat", "Effekt", "Anim", "Társas", "Beáll."};
         pages = new LinearLayout[tabNames.length];
         tabs = new Button[tabNames.length];
         root.addView(buildTabBar(tabNames));
@@ -356,6 +362,26 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
             if (pos >= 0) moodBar.setProgress(pos);   // keep the scale (and the decay) in step with the classic moods
         }));
         page.addView(grid);
+
+        page.addView(section("Saját szín"));
+        String[] ch = {"Piros", "Zöld", "Kék"};
+        for (int i = 0; i < 3; i++) {
+            final int k = i;
+            page.addView(text(ch[i], 0xCCFFFFFF, 12));
+            page.addView(seekBar(255, custom[i], v -> { custom[k] = v; applyMood("rgb:" + custom[0] + "," + custom[1] + "," + custom[2]); }));
+        }
+
+        page.addView(section("Hangulat küldése másnak (az aktuális szín megy)"));
+        sendGrid = grid(4);
+        page.addView(sendGrid);
+
+        page.addView(button("Műsor… (időzített sorrend)", v -> showDialog()));
+    }
+
+    TextView section(String s) {
+        TextView t = text(s, Color.WHITE, 14);
+        t.setPadding(0, dp(12), 0, dp(2));
+        return t;
     }
 
     View buildMoodSlider() {
@@ -393,7 +419,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         TextView label = text("Effekt sebessége", Color.WHITE, 14);
         label.setPadding(0, dp(10), 0, dp(4));
         page.addView(label);
-        page.addView(seekBar(speed, v -> { speed = v; for (Lamp l : selected()) link.enqueue(l, Proto.speed(l.family, speed)); }));
+        page.addView(seekBar(100, speed, v -> { speed = v; for (Lamp l : selected()) link.enqueue(l, Proto.speed(l.family, speed)); }));
     }
 
     void buildAnimPage(LinearLayout page) {
@@ -401,11 +427,11 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         for (int i = 0; i < Frames.ANIMS.length; i++) {
             final int a = i;
             Button b = pill(Frames.ANIMS[i][0], Frames.ANIMS[i][1], 15, dp(56), () -> startAnim(a));
-            if (Frames.isPerLamp(a)) b.setOnLongClickListener(v -> { sendInvite(a); return true; });
+            if (a != Frames.MIC) b.setOnLongClickListener(v -> { sendInvite(a); return true; });
             grid.addView(b);
         }
         page.addView(grid);
-        page.addView(hint("Csoport-animáció hosszú nyomásra: meghívást küld a közeli telefonoknak (Bluetooth); akik elfogadják, azoknál is elindul, óra-szinkronban, a Kié?-nevek sorrendjében."));
+        page.addView(hint("Hosszú nyomás bármelyik animáción: meghívást küld a közeli telefonoknak (Bluetooth); akik elfogadják, azoknál is elindul, óra-szinkronban, a csoportosak a Kié?-nevek sorrendjében."));
     }
 
     void buildLifePage(LinearLayout page) {
@@ -437,42 +463,287 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         page.addView(atkLabel);
         atkGrid = grid(4);
         page.addView(atkGrid);
-        rebuildAttackButtons();
+
+        page.addView(section("Szavazás – a lámpád a válaszod színe"));
+        GridLayout voteGrid = grid(4);
+        for (int i = 0; i < VOTE_NAMES.length; i++) { final int c = i; voteGrid.addView(pill(VOTE_NAMES[i], VOTE_HEX[i], 18, dp(56), () -> castVote(c))); }
+        page.addView(voteGrid);
+        voteView = text("", Color.WHITE, 15);
+        voteView.setPadding(0, dp(4), 0, 0);
+        page.addView(voteView);
+        page.addView(button("Új szavazás (mindenkinél töröl)", v -> resetVotes(true)));
+
+        page.addView(section("Reakció-játék – sötét, aztán villan: ki koppint először?"));
+        page.addView(button("Reakció-játék indítása (mindenkinél)", v -> startReaction()));
+        reactBtn = pill("—", "#DDDDDD", 24, dp(96), this::reactTap);
+        GridLayout reactGrid = grid(1);
+        reactGrid.addView(reactBtn);
+        page.addView(reactGrid);
+        reactView = text("", Color.WHITE, 15);
+        page.addView(reactView);
+
+        rebuildPeopleButtons();
+        showVotes();
+    }
+
+    // ---- voting: everybody's lamp shows their answer, every phone tallies what it hears ----
+    static final String[] VOTE_NAMES = {"A", "B", "C", "D"};
+    static final String[] VOTE_HEX = {"#33EE33", "#EE3333", "#6688FF", "#EECC33"};
+    static final int[][] VOTE_RGB = {{0, 255, 0}, {255, 0, 0}, {0, 0, 255}, {255, 210, 0}};
+    final int[] votes = {-1, -1, -1, -1};
+    final ArrayDeque<Integer> seenResets = new ArrayDeque<>();
+    TextView voteView;
+
+    void castVote(int choice) {
+        int me = personIdx(myName());
+        if (me >= 0) votes[me] = choice;
+        applyMood("rgb:" + VOTE_RGB[choice][0] + "," + VOTE_RGB[choice][1] + "," + VOTE_RGB[choice][2]);
+        beacons.send(Beacons.VOTE, choice, rnd.nextInt(65536), myMask(), VOTE_RGB[choice], myName(), 6000);
+        showVotes();
+    }
+
+    void resetVotes(boolean broadcast) {
+        Arrays.fill(votes, -1);
+        showVotes();
+        if (!broadcast) return;
+        int nonce = rnd.nextInt(65536);
+        remember(seenResets, nonce);
+        beacons.send(Beacons.VOTE_RESET, 0, nonce, myMask(), base, myName(), 6000);
+    }
+
+    void showVotes() {
+        StringBuilder s = new StringBuilder();
+        for (int i = 0; i < PEOPLE.length; i++) {
+            if (!present(i) && votes[i] < 0) continue;
+            s.append(s.length() > 0 ? "   " : "").append(PEOPLE[i]).append(": ").append(votes[i] < 0 ? "–" : VOTE_NAMES[votes[i]]);
+        }
+        voteView.setText(s.length() == 0 ? "Még senki nem szavazott." : s.toString());
+    }
+
+    void onVote(Beacons.Msg m) {
+        int p = personIdx(m.from);
+        if (p >= 0 && m.idx < VOTE_NAMES.length) { votes[p] = m.idx; showVotes(); }
+    }
+
+    void onVoteReset(Beacons.Msg m) {
+        if (seenResets.contains(m.nonce)) return;
+        remember(seenResets, m.nonce);
+        Arrays.fill(votes, -1);
+        showVotes();
+        toast(m.from + ": új szavazás");
+    }
+
+    // ---- reaction game: lamps go dark, flash white at one wall-clock instant on every phone, first tap wins ----
+    long reactAt;        // flash time, 0 = no game armed
+    int reactNonce;
+    boolean reactDone;
+    Button reactBtn;
+    TextView reactView;
+    final Map<String, Integer> reactResults = new LinkedHashMap<>();   // wearer -> ms, -1 = tapped early
+    final ArrayDeque<Integer> seenReacts = new ArrayDeque<>();
+
+    void startReaction() {
+        long at = System.currentTimeMillis() + 5000 + rnd.nextInt(5000);
+        int nonce = rnd.nextInt(65536);
+        remember(seenReacts, nonce);
+        beacons.send(Beacons.REACT_START, 0, nonce, myMask(), clock24(at), myName(), 6000);
+        armReaction(at, nonce);
+    }
+
+    static int[] clock24(long t) { return new int[]{(int) ((t >> 16) & 0xFF), (int) ((t >> 8) & 0xFF), (int) (t & 0xFF)}; }
+
+    /** The flash instant from its low 24 bits, taken as the one closest to now (the beacon is only seconds old). */
+    static long unclock24(int[] c, long now) {
+        long t = (now & ~0xFFFFFFL) | ((long) c[0] << 16) | ((long) c[1] << 8) | c[2];
+        if (t - now > (1 << 23)) t -= 1 << 24;
+        else if (now - t > (1 << 23)) t += 1 << 24;
+        return t;
+    }
+
+    void armReaction(long at, int nonce) {
+        reactAt = at;
+        reactNonce = nonce;
+        reactDone = false;
+        reactResults.clear();
+        reactView.setText("");
+        showPage(3);
+        fresh();
+        for (Lamp l : selected()) { wake(l); setColour(l, new int[]{0, 0, 0}); }
+        reactBtn.setText("VÁRJ…");
+        ui.postDelayed(() -> {
+            if (reactNonce != nonce || reactDone) return;
+            for (Lamp l : selected()) setColour(l, RGB.get("white"));
+            reactBtn.setText("KOPPINTS!");
+        }, Math.max(0, at - System.currentTimeMillis()));
+    }
+
+    void reactTap() {
+        if (reactAt == 0 || reactDone) return;
+        reactDone = true;
+        long now = System.currentTimeMillis();
+        int ms = now < reactAt ? -1 : (int) Math.min(0xFFFFFE, now - reactAt);
+        reactBtn.setText(ms < 0 ? "Korai!" : ms + " ms");
+        reactResults.put(myName(), ms);
+        showReact();
+        int code = ms < 0 ? 0xFFFFFF : ms;
+        beacons.send(Beacons.REACT, 0, reactNonce, myMask(), new int[]{(code >> 16) & 0xFF, (code >> 8) & 0xFF, code & 0xFF}, myName(), 8000);
+        final int nonce = reactNonce;
+        ui.postDelayed(() -> { if (reactNonce == nonce) for (Lamp l : selected()) moodFrames(l, l.mood != null ? l.mood : mood); }, 1500);
+    }
+
+    void onReactStart(Beacons.Msg m) {
+        if (seenReacts.contains(m.nonce)) return;
+        remember(seenReacts, m.nonce);
+        armReaction(unclock24(m.colour, System.currentTimeMillis()), m.nonce);
+    }
+
+    void onReact(Beacons.Msg m) {
+        if (m.nonce != reactNonce) return;
+        int code = (m.colour[0] << 16) | (m.colour[1] << 8) | m.colour[2];
+        reactResults.put(m.from, code == 0xFFFFFF ? -1 : code);
+        showReact();
+    }
+
+    void showReact() {
+        List<Map.Entry<String, Integer>> r = new ArrayList<>(reactResults.entrySet());
+        r.sort((a, b) -> Integer.compare(a.getValue() < 0 ? Integer.MAX_VALUE : a.getValue(), b.getValue() < 0 ? Integer.MAX_VALUE : b.getValue()));
+        StringBuilder s = new StringBuilder();
+        int place = 1;
+        for (Map.Entry<String, Integer> e : r) s.append(place++).append(". ").append(e.getKey()).append(e.getValue() < 0 ? "  korai" : "  " + e.getValue() + " ms").append('\n');
+        reactView.setText(s.toString().trim());
+    }
+
+    // ---- give someone a colour ----
+    final ArrayDeque<Integer> seenMoods = new ArrayDeque<>();
+
+    void sendMood(int target) {
+        int nonce = rnd.nextInt(65536);
+        remember(seenMoods, nonce);
+        for (Lamp l : lampsOf(target)) giveMood(l, myName(), base);
+        beacons.send(Beacons.MOOD, 0, nonce, 1 << target, base, myName(), 8000);
+        toast("Szín elküldve: " + PEOPLE[target]);
+    }
+
+    void onMood(Beacons.Msg m) {
+        if (seenMoods.contains(m.nonce) || (myMask() & m.mask) == 0) return;
+        remember(seenMoods, m.nonce);
+        for (int i = 0; i < PEOPLE.length; i++) if ((m.mask & (1 << i)) != 0) for (Lamp l : lampsOf(i)) giveMood(l, m.from, m.colour);
+    }
+
+    void giveMood(Lamp l, String from, int[] c) {
+        l.queue.clear();
+        l.fadeId++;
+        wake(l);
+        l.mood = "rgb:" + c[0] + "," + c[1] + "," + c[2];
+        fadeTo(l, c);
+        toast(from + " színt küldött: " + l.shortName());
+    }
+
+    // ---- timed show: "Kiváló 5" lines, each a mood / effect / animation name and minutes ----
+    Runnable show;
+    List<String[]> showSteps;
+
+    void showDialog() {
+        android.widget.EditText box = new android.widget.EditText(this);
+        box.setText(prefs.getString("show", "Kiváló 5\nSzivárvány 2\nSemleges 5\nFeszült 2\nKritikus 1"));
+        box.setMinLines(5);
+        new AlertDialog.Builder(this)
+            .setTitle("Műsor: név és perc soronként")
+            .setView(box)
+            .setPositiveButton(show == null ? "Indít" : "Újraindít", (d, w) -> { prefs.edit().putString("show", box.getText().toString()).apply(); startShow(box.getText().toString()); })
+            .setNegativeButton("Leállít", (d, w) -> stopShow())
+            .setNeutralButton("Mégse", null)
+            .show();
+    }
+
+    /** Line "Szivárvány 2" -> {"anim:…"|"mood:…"|"fx:…", minutes}; unknown names are reported and skipped. */
+    List<String[]> parseShow(String text) {
+        List<String[]> steps = new ArrayList<>();
+        for (String raw : text.split("\n")) {
+            String line = raw.trim();
+            int sp = line.lastIndexOf(' ');
+            if (sp < 1) continue;
+            String name = line.substring(0, sp).trim(), mins = line.substring(sp + 1).replace(',', '.');
+            String what = resolveName(name);
+            if (what == null) { toast("Ismeretlen: " + name); continue; }
+            try { steps.add(new String[]{what, String.valueOf(Double.parseDouble(mins))}); } catch (NumberFormatException e) { toast("Nem perc: " + line); }
+        }
+        return steps;
+    }
+
+    static String resolveName(String name) {
+        for (String[] m : MOODS) if (m[0].equalsIgnoreCase(name)) return "mood:" + m[1];
+        for (int i = 0; i < EFFECTS.length; i++) if (EFFECTS[i].equalsIgnoreCase(name)) return "fx:" + (FIRST_EFFECT + i);
+        for (int i = 0; i < Frames.ANIMS.length; i++) if (Frames.ANIMS[i][0].equalsIgnoreCase(name) || Frames.ANIMS[i][0].toLowerCase().startsWith(name.toLowerCase() + " (")) return "anim:" + i;
+        return null;
+    }
+
+    void startShow(String text) {
+        stopShow();
+        showSteps = parseShow(text);
+        if (showSteps.isEmpty()) { toast("Üres műsor"); return; }
+        show = new Runnable() {
+            int i = 0;
+            public void run() {
+                String[] step = showSteps.get(i % showSteps.size());
+                String what = step[0];
+                if (what.startsWith("mood:")) { String m = what.substring(5); if ("levelup".equals(m)) levelUp(); else applyMood(m); }
+                else if (what.startsWith("fx:")) applyMood(what);
+                else startAnim(Integer.parseInt(what.substring(5)));
+                toast("Műsor " + (i % showSteps.size() + 1) + "/" + showSteps.size());
+                i++;
+                ui.postDelayed(this, (long) (Double.parseDouble(step[1]) * 60000));
+            }
+        };
+        show.run();
+    }
+
+    void stopShow() {
+        if (show != null) { ui.removeCallbacks(show); show = null; toast("Műsor leállítva"); }
     }
 
     // ---- who is around: our own named lamps + wearers whose phones we heard in the last 45 s ----
     static final int PRESENCE_EVERY_MS = 15000, PRESENCE_ADVERT_MS = 3000, PRESENCE_TTL_MS = 45000;
     final long[] lastHeard = new long[PEOPLE.length];   // uptime ms per wearer, 0 = never
-    GridLayout atkGrid;
+    GridLayout atkGrid, sendGrid;
 
     void notePresence(int mask) {
         long now = android.os.SystemClock.uptimeMillis();
         boolean changed = false;
         for (int i = 0; i < PEOPLE.length; i++) if ((mask & (1 << i)) != 0) { changed |= !present(i); lastHeard[i] = now; }
-        if (changed) rebuildAttackButtons();
+        if (changed) rebuildPeopleButtons();
     }
 
     boolean present(int i) {
         return (myMask() & (1 << i)) != 0 || (lastHeard[i] != 0 && android.os.SystemClock.uptimeMillis() - lastHeard[i] < PRESENCE_TTL_MS);
     }
 
-    void rebuildAttackButtons() {
-        atkGrid.removeAllViews();
+    interface Target { void pick(int personIndex); }
+
+    /** One button per wearer who is around; a hint when nobody is. */
+    void fillPeople(GridLayout g, String colour, Target action) {
+        g.removeAllViews();
         int n = 0;
         for (int i = 0; i < PEOPLE.length; i++) {
             if (!present(i)) continue;
             final int t = i;
-            atkGrid.addView(pill(PEOPLE[i], "#FFAA55", 14, dp(48), () -> sendAttack(t)));
+            g.addView(pill(PEOPLE[i], colour, 14, dp(48), () -> action.pick(t)));
             n++;
         }
-        if (n == 0) atkGrid.addView(text("Senkit nem látunk még (Kié?-név kell mindenkinél, app nyitva)", 0xCCFFFFFF, 13));
+        if (n == 0) g.addView(text("Senkit nem látunk még (Kié?-név kell mindenkinél, app nyitva)", 0xCCFFFFFF, 13));
+    }
+
+    void rebuildPeopleButtons() {
+        if (atkGrid != null) fillPeople(atkGrid, "#FFAA55", this::sendAttack);
+        if (sendGrid != null) fillPeople(sendGrid, "#BBDDFF", this::sendMood);
+        if (voteView != null) showVotes();
     }
 
     /** Every 15 s: tell the others who is on this phone, forget wearers not heard of for 45 s. */
     final Runnable presence = new Runnable() {
         public void run() {
             if (myMask() != 0) beacons.send(Beacons.PRESENCE, 0, rnd.nextInt(65536), myMask(), base, myName(), PRESENCE_ADVERT_MS);
-            rebuildAttackButtons();   // drops the expired ones
+            rebuildPeopleButtons();   // drops the expired ones
             ui.postDelayed(this, PRESENCE_EVERY_MS);
         }
     };
@@ -505,6 +776,12 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         }
         page.addView(whites);
 
+        page.addView(section("Színkorrekció – ha a sárga/narancs zöldes, vedd lejjebb a zöldet"));
+        page.addView(text("Zöld LED erőssége: " + gainG + " %", 0xCCFFFFFF, 12));
+        page.addView(seekBar(100, gainG, v -> { gainG = Math.max(10, v); prefs.edit().putInt("gainG", gainG).apply(); reapply(); }));
+        page.addView(text("Kék LED erőssége: " + gainB + " %", 0xCCFFFFFF, 12));
+        page.addView(seekBar(100, gainB, v -> { gainB = Math.max(10, v); prefs.edit().putInt("gainB", gainB).apply(); reapply(); }));
+
         Switch shakeSw = new Switch(this);
         shakeSw.setText("Rázásra véletlen hangulat  ");
         shakeSw.setTextColor(Color.WHITE);
@@ -534,7 +811,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     }
 
     View buildBrightnessBar() {
-        return seekBar(brightness, v -> { brightness = Math.max(1, v); for (Lamp l : selected()) link.enqueue(l, Proto.brightness(l.family, brightness)); });
+        return seekBar(100, brightness, v -> { brightness = Math.max(1, v); for (Lamp l : selected()) link.enqueue(l, Proto.brightness(l.family, brightness)); });
     }
 
     // Settings row of one lamp: label (long-press = blink), "Kié?" (name the wearer) and "Elenged" (hand over to another phone).
@@ -577,7 +854,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
             if (r != null) r.label.setText(lamp.label());
             rebuildWho();
             showHp(false);
-            rebuildAttackButtons();
+            rebuildPeopleButtons();
         }).show();
     }
 
@@ -635,7 +912,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         Integer kept = hpByMac.get(lamp.mac());
         if (kept != null) lamp.hp = Math.min(kept, hpMax);
         showHp(false);
-        rebuildAttackButtons();
+        rebuildPeopleButtons();
         // The lamp kept its colour across the drop; re-apply what THIS lamp last showed, not the phone-wide mood.
         if (levelup == null) moodFrames(lamp, lamp.mood != null ? lamp.mood : mood);
     }
@@ -692,6 +969,11 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         RGB.put("white", new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2])});
     }
 
+    /** Re-send what the selected lamps show, e.g. after a colour-correction change. */
+    void reapply() {
+        for (Lamp l : selected()) if (l.mood != null && !l.mood.startsWith("anim:")) moodFrames(l, l.mood);
+    }
+
     /** Power on and set brightness (unless the pulse drives it): the start of every colour change. */
     void wake(Lamp l) {
         link.enqueue(l, Proto.on(l.family));
@@ -745,9 +1027,10 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         }
     }
 
+    /** The one place colours leave the phone: the green/blue correction for this string is applied here. */
     void setColour(Lamp l, int[] c) {
         l.colour = c;
-        link.enqueue(l, Proto.rgb(l.family, c[0], c[1], c[2]));
+        link.enqueue(l, Proto.rgb(l.family, c[0], c[1] * gainG / 100, c[2] * gainB / 100));
     }
 
     /** White/green flashing for 3 s, then back to happy green. */
@@ -865,15 +1148,15 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         for (Lamp l : selected()) { l.mood = mood; wake(l); }
         animStep = 0;
         if (idx == Frames.MIC) { startMic(); return; }   // startMic sets the 'anim' marker only once capture really runs
-        animWait = Frames.isPerLamp(idx) ? Frames.period(idx) : Frames.shared(idx, 0, rnd)[3];
+        animWait = Frames.isPerLamp(idx) ? Frames.period(idx) : Frames.shared(idx, 0, 0)[3];   // nonce 0: every phone agrees on the tick
         anim = new Runnable() {
             public void run() {
                 List<Lamp> sel = ordered();
                 int total = Math.max(1, sel.size());
                 long now = System.currentTimeMillis();
                 int clockStep = (int) ((now / animWait) % 1000000);   // same on every phone whose clock is right
-                int[] shared = Frames.isPerLamp(idx) ? null : Frames.shared(idx, groupMode ? clockStep : animStep, rnd);
-                int wait = shared != null ? shared[3] : animWait;
+                int[] shared = Frames.isPerLamp(idx) ? null : Frames.shared(idx, groupMode ? clockStep : animStep, curNonce);
+                int wait = groupMode || shared == null ? animWait : shared[3];   // a session ticks on a fixed grid so phones stay together
                 int rosterSize = Math.max(1, Integer.bitCount(roster));
                 for (int k = 0; k < sel.size(); k++) {
                     Lamp l = sel.get(k);
@@ -970,6 +1253,11 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
             case Beacons.PRESENCE: break;
             case Beacons.ATTACK: onAttack(m); break;
             case Beacons.ACK: onAck(m); break;
+            case Beacons.MOOD: onMood(m); break;
+            case Beacons.VOTE_RESET: onVoteReset(m); break;
+            case Beacons.VOTE: onVote(m); break;
+            case Beacons.REACT_START: onReactStart(m); break;
+            case Beacons.REACT: onReact(m); break;
             default: onInviteOrAccept(m);
         }
     }
@@ -1049,8 +1337,8 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         l.queue.clear();
         final int ep = epoch;
         wake(l);
-        link.enqueue(l, Proto.rgb(l.family, 255, 255, 255));
-        ui.postDelayed(() -> { if (ep != epoch || !l.connected()) return; l.colour = new int[]{255, 255, 255}; moodFrames(l, "hp"); }, 200);
+        setColour(l, RGB.get("white"));
+        ui.postDelayed(() -> { if (ep == epoch && l.connected()) moodFrames(l, "hp"); }, 200);
         showHp(false);
     }
 
@@ -1160,10 +1448,10 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
 
     interface IntConsumer { void accept(int v); }
 
-    /** 0..100 slider that reports the value when the finger lifts. */
-    SeekBar seekBar(int initial, IntConsumer onStop) {
+    /** 0..max slider that reports the value when the finger lifts. */
+    SeekBar seekBar(int max, int initial, IntConsumer onStop) {
         SeekBar s = new SeekBar(this);
-        s.setMax(100);
+        s.setMax(max);
         s.setProgress(initial);
         s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onProgressChanged(SeekBar b, int p, boolean user) { }

@@ -2,8 +2,6 @@ package hu.ntamas.plumbob;
 
 import android.graphics.Color;
 
-import java.util.Random;
-
 /**
  * Colour maths of the phone-driven animations. Pure functions: a frame is {r, g, b, holdMs}.
  * Shared animations give every lamp the same frame; from MULTI on each lamp gets its own by slot.
@@ -28,17 +26,17 @@ final class Frames {
 
     static boolean isPerLamp(int idx) { return idx >= MULTI && idx < MIC; }
 
-    /** Frame of a shared animation at step n. */
-    static int[] shared(int idx, int n, Random rnd) {
+    /** Frame of a shared animation at step n; the randomness comes from nonce+n, so phones in one session agree. */
+    static int[] shared(int idx, int n, int nonce) {
         switch (idx) {
             case 0: {   // Szívverés: lub-dub, then rest
                 int k = n % 4;
                 return k == 0 || k == 2 ? frame(255, 0, 0, 120) : frame(35, 0, 0, k == 1 ? 140 : 700);
             }
-            case 1: return frame(255, 15 + rnd.nextInt(55), 0, 70 + rnd.nextInt(90));                  // Tűz (green LED is strong on these strings: keep it low)
+            case 1: return frame(255, 15 + r(nonce, n, 1, 55), 0, 70 + r(nonce, n, 2, 90));                  // Tűz (green LED is strong on these strings: keep it low)
             case 2: return n % 2 == 0 ? frame(255, 0, 0, 250) : frame(0, 0, 255, 250);                  // Sziréna
-            case 3: return rnd.nextInt(100) < 15 ? frame(255, 255, 255, 60) : frame(8, 8, 40, 150);     // Villám
-            case 4: return pick(PURE, rnd.nextInt(PURE.length), 200);                                   // Disco
+            case 3: return r(nonce, n, 3, 100) < 15 ? frame(255, 255, 255, 60) : frame(8, 8, 40, 150);     // Villám
+            case 4: return pick(PURE, r(nonce, n, 4, PURE.length), 200);                                   // Disco
             case 5: return breathing(120, 200, 255, 0.2, n / 10.0, 100);                                // Szellem
             case 6: return n % 2 == 0 ? frame(255, 80, 0, 500) : frame(120, 0, 200, 500);               // Halloween
             case 7:                                                                                     // WooHoo
@@ -47,24 +45,24 @@ final class Frames {
             case 8: return n % 2 == 0 ? frame(0, 80, 0, 800) : frame(50, 140, 0, 800);                  // Zombi
             case 9: return hsv((n * 6) % 360, 100);                                                     // Szivárvány-hullám
             case 10: {  // Gyertya: slow amber breathing with a little flicker; green stays low, this string's green LED is strong
-                int g = 40 + (int) (12 * Math.sin(n / 2.5)) + rnd.nextInt(8);
-                return frame(230 + rnd.nextInt(26), g, 0, 300 + rnd.nextInt(250));
+                int g = 40 + (int) (12 * Math.sin(n / 2.5)) + r(nonce, n, 5, 8);
+                return frame(230 + r(nonce, n, 6, 26), g, 0, 300 + r(nonce, n, 7, 250));
             }
             case 11: return n % 2 == 0 ? frame(140, 0, 220, 600) : frame(60, 255, 0, 600);              // Boszorkány
             case 12: return breathing(255, 0, 0, 0.15, n / 8.0, 100);                                   // Vámpír
             case 13:                                                                                    // Alien
                 if (n % 8 == 7) return frame(255, 255, 255, 60);
                 return n % 2 == 0 ? frame(0, 255, 80, 150) : frame(160, 0, 255, 150);
-            case 14: return rnd.nextInt(100) < 20 ? frame(255, 255, 200, 60) : frame(255, 180, 0, 150); // Simoleon
+            case 14: return r(nonce, n, 8, 100) < 20 ? frame(255, 255, 200, 60) : frame(255, 180, 0, 150); // Simoleon
             case 15: return n % 2 == 0 ? frame(255, 255, 255, 50) : frame(0, 0, 0, 50);                 // Strobo
             case 16: return pick(XMAS, n % 3, 500);                                                     // Karácsony
             case 17: return pick(FLAG, n % 3, 600);                                                     // Magyar zászló
             case 18: {  // Tévé: bluish flicker
-                int v = 60 + rnd.nextInt(196);
-                return frame((int) (v * 0.7), (int) (v * 0.8), v, 60 + rnd.nextInt(120));
+                int v = 60 + r(nonce, n, 9, 196);
+                return frame((int) (v * 0.7), (int) (v * 0.8), v, 60 + r(nonce, n, 10, 120));
             }
             case 19: return withHold(plumbobColor((n % 100) / 100f), 200);                              // Éhező Sim
-            default: return rnd.nextInt(100) < 10 ? frame(90, 90, 110, 80) : frame(2, 2, 4, 200);       // Kaszás
+            default: return r(nonce, n, 11, 100) < 10 ? frame(90, 90, 110, 80) : frame(2, 2, 4, 200);       // Kaszás
         }
     }
 
@@ -147,6 +145,9 @@ final class Frames {
         }
         return frame(3, 3, 6, 150);
     }
+
+    /** Random-looking number in [0, bound) that every phone in the session computes alike. */
+    private static int r(int nonce, int n, int salt, int bound) { return seeded(nonce, n, 1000 + salt) % bound; }
 
     /** Deterministic pseudo-random: phones sharing a nonce get the same numbers. */
     static int seeded(int nonce, int a, int b) {

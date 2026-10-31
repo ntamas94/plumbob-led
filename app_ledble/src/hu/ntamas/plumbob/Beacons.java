@@ -22,7 +22,13 @@ import java.util.Collections;
  */
 final class Beacons {
     static final int COMPANY = 0xFFFF;
-    static final int INVITE = 1, ACCEPT = 2, ATTACK = 3, ACK = 4, PRESENCE = 5;   // PRESENCE: "these wearers are on my phone", sent every 15 s
+    static final int INVITE = 1, ACCEPT = 2, ATTACK = 3, ACK = 4, PRESENCE = 5,   // PRESENCE: "these wearers are on my phone", every 15 s
+        MOOD = 6,          // give someone a colour: mask = target wearers, colour = rgb
+        VOTE_RESET = 7,    // new poll, everybody's answer cleared
+        VOTE = 8,          // idx = answer (0..3) of the sender
+        REACT_START = 9,   // reaction game: colour bytes = flash time, wall clock ms mod 2^24
+        REACT = 10,        // idx/colour bytes = reaction time in ms (0xFFFFFF = tapped too early)
+        LAST = REACT;
     /** High nibble of byte 0. Bump it whenever Frames' deterministic maths or this payload changes, so older
      *  app versions ignore us instead of joining a session they would run differently. v17 and older: nibble 0. */
     static final int PROTOCOL = 0x10;
@@ -44,14 +50,14 @@ final class Beacons {
     private final BluetoothAdapter adapter;
     private final Handler ui;
     private final Listener listener;
-    private final AdvertiseCallback[] advertisers = new AdvertiseCallback[PRESENCE + 1];   // one per kind, so kinds do not cancel each other
+    private final AdvertiseCallback[] advertisers = new AdvertiseCallback[LAST + 1];   // one per kind, so kinds do not cancel each other
     private boolean scanning;
 
     Beacons(BluetoothAdapter adapter, Handler ui, Listener listener) {
         this.adapter = adapter;
         this.ui = ui;
         this.listener = listener;
-        for (int k = INVITE; k <= PRESENCE; k++) {
+        for (int k = INVITE; k <= LAST; k++) {
             advertisers[k] = new AdvertiseCallback() {
                 @Override public void onStartFailure(int err) { ui.post(() -> listener.onSendFailed(err)); }
             };
@@ -71,7 +77,7 @@ final class Beacons {
     static Msg decode(byte[] p) {
         if (p == null || p.length < 8 || (p[0] & 0xF0) != PROTOCOL) return null;
         int kind = p[0] & 0x0F;
-        if (kind < INVITE || kind > PRESENCE) return null;
+        if (kind < INVITE || kind > LAST) return null;
         int nonce = ((p[2] & 0xFF) << 8) | (p[3] & 0xFF);
         int[] colour = {p[5] & 0xFF, p[6] & 0xFF, p[7] & 0xFF};
         return new Msg(kind, p[1] & 0xFF, nonce, p[4] & 0xFF, colour, new String(p, 8, p.length - 8, StandardCharsets.UTF_8));
