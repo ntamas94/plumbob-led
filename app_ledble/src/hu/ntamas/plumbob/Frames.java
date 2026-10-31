@@ -35,7 +35,7 @@ final class Frames {
                 int k = n % 4;
                 return k == 0 || k == 2 ? frame(255, 0, 0, 120) : frame(35, 0, 0, k == 1 ? 140 : 700);
             }
-            case 1: return frame(255, 30 + rnd.nextInt(110), 0, 70 + rnd.nextInt(90));                 // Tűz
+            case 1: return frame(255, 15 + rnd.nextInt(55), 0, 70 + rnd.nextInt(90));                  // Tűz (green LED is strong on these strings: keep it low)
             case 2: return n % 2 == 0 ? frame(255, 0, 0, 250) : frame(0, 0, 255, 250);                  // Sziréna
             case 3: return rnd.nextInt(100) < 15 ? frame(255, 255, 255, 60) : frame(8, 8, 40, 150);     // Villám
             case 4: return pick(PURE, rnd.nextInt(PURE.length), 200);                                   // Disco
@@ -46,7 +46,7 @@ final class Frames {
                 return n % 2 == 0 ? frame(255, 40, 120, 300) : frame(255, 0, 60, 300);
             case 8: return n % 2 == 0 ? frame(0, 80, 0, 800) : frame(50, 140, 0, 800);                  // Zombi
             case 9: return hsv((n * 6) % 360, 100);                                                     // Szivárvány-hullám
-            case 10: return frame(255, 120 + rnd.nextInt(60), 10 + rnd.nextInt(20), 120 + rnd.nextInt(160)); // Gyertya
+            case 10: return frame(255, 45 + rnd.nextInt(35), rnd.nextInt(6), 120 + rnd.nextInt(160));   // Gyertya: amber, not yellow-green
             case 11: return n % 2 == 0 ? frame(140, 0, 220, 600) : frame(60, 255, 0, 600);              // Boszorkány
             case 12: return breathing(255, 0, 0, 0.15, n / 8.0, 100);                                   // Vámpír
             case 13:                                                                                    // Alien
