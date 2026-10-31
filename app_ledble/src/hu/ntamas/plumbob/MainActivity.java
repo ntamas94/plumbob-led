@@ -55,8 +55,9 @@ public class MainActivity extends Activity {
         {"Szivárvány-hullám", "#FFCC66"}, {"Gyertya", "#FFD27F"}, {"Boszorkány", "#99FF66"}, {"Vámpír", "#AA2222"},
         {"Alien", "#66FFCC"}, {"Simoleon", "#FFD700"}, {"Strobo", "#FFFFFF"}, {"Karácsony", "#FF6666"},
         {"Magyar zászló", "#DDFFDD"}, {"Tévé", "#AACCFF"}, {"Éhező Sim", "#CCDD55"}, {"Kaszás", "#999999"},
-        // From MULTI on: per-lamp frames in wearer order (Dani, Tamás, Bianka, Vivi), see multiFrame().
-        {"Futófény (4 lámpa)", "#FFFFAA"}, {"Pingpong (4 lámpa)", "#AAFFFF"}, {"Hullám (4 lámpa)", "#FFAAFF"},
+        // From MULTI on: per-lamp frames in wearer order (Dani, Tamás, Bianka, Vivi), see multiFrame(). With the lamps
+        // spread over several phones the step comes from the wall clock, so everyone pressing the same button stays in sync.
+        {"Futófény (csoport)", "#FFFFAA"}, {"Pingpong (csoport)", "#AAFFFF"}, {"Hullám (csoport)", "#FFAAFF"},
         {"Zene (mikrofon)", "#FFEE88"},
     };
     static final int MULTI = 21, MIC = 24;
@@ -284,9 +285,17 @@ public class MainActivity extends Activity {
         anGrid.setColumnCount(2);
         for (int i = 0; i < ANIMS.length; i++) {
             final int a = i;
-            anGrid.addView(pill(ANIMS[i][0], ANIMS[i][1], 15, dp(56), () -> startAnim(a)));
+            Button ab = pill(ANIMS[i][0], ANIMS[i][1], 15, dp(56), () -> startAnim(a));
+            if (a >= MULTI && a < MIC) ab.setOnLongClickListener(v -> { sendInvite(a); return true; });
+            anGrid.addView(ab);
         }
         pages[2].addView(anGrid);
+        TextView anHint = new TextView(this);
+        anHint.setText("Csoport-animáció hosszú nyomásra: meghívást küld a közeli telefonoknak (Bluetooth), akik elfogadják, azoknál is elindul, óra-szinkronban.");
+        anHint.setTextColor(0xCCFFFFFF);
+        anHint.setTextSize(13);
+        anHint.setPadding(0, dp(6), 0, 0);
+        pages[2].addView(anHint);
 
         LinearLayout blRow = new LinearLayout(this);
         blRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -371,7 +380,7 @@ public class MainActivity extends Activity {
         settings.addView(shakeSw);
 
         TextView hint = new TextView(this);
-        hint.setText("Hosszú nyomás a lámpa nevén: villan, hogy lásd, melyik az. „Kié?”: név a lámpához, a telefon megjegyzi. Animáció vagy Lüktetés közben az app háttérben is megy (értesítés a sávban), statikus színnél kilépéskor elenged, a lámpa megjegyzi a színt.");
+        hint.setText("Hosszú nyomás a lámpa nevén: villan, hogy lásd, melyik az. „Kié?”: név a lámpához, a telefon megjegyzi. Animáció vagy Lüktetés közben az app háttérben is megy (értesítés a sávban), statikus színnél kilépéskor elenged, a lámpa megjegyzi a színt. Csoport-animációk több telefonról: mindenki adjon nevet a lámpájának és nyomja ugyanazt, a telefonok órája tartja a ritmust.");
         hint.setTextColor(0xCCFFFFFF);
         hint.setPadding(0, dp(8), 0, 0);
         settings.addView(hint);
@@ -520,11 +529,81 @@ public class MainActivity extends Activity {
     }
 
     String[] perms() {
-        if (Build.VERSION.SDK_INT >= 33) return new String[]{"android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT", "android.permission.POST_NOTIFICATIONS"};
+        if (Build.VERSION.SDK_INT >= 33) return new String[]{"android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT", "android.permission.BLUETOOTH_ADVERTISE", "android.permission.POST_NOTIFICATIONS"};
         return Build.VERSION.SDK_INT >= 31
-            ? new String[]{"android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT"}
+            ? new String[]{"android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT", "android.permission.BLUETOOTH_ADVERTISE"}
             : new String[]{"android.permission.ACCESS_FINE_LOCATION"};
     }
+
+    // ---- Invitations between phones: a 20 s BLE advertisement carrying {version, animation, nonce, sender}. ----
+    static final int COMPANY = 0xFFFF;   // manufacturer id used for our invite payload
+    int myNonce;
+    int lastInviteNonce = -1;
+    boolean inviteScanning;
+
+    String myName() {
+        for (Bob b : bobs.values()) if (b.person != null) return b.person;
+        return "Valaki";
+    }
+
+    @SuppressWarnings("MissingPermission")
+    void sendInvite(int idx) {
+        startAnim(idx);
+        BluetoothLeAdvertiser adv = adapter.getBluetoothLeAdvertiser();
+        if (adv == null) { Toast.makeText(this, "Ez a telefon nem tud BLE-hirdetést küldeni", Toast.LENGTH_LONG).show(); return; }
+        myNonce = rnd.nextInt(65536);
+        byte[] name = myName().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] p = new byte[4 + Math.min(name.length, 16)];
+        p[0] = 1; p[1] = (byte) idx; p[2] = (byte) (myNonce >> 8); p[3] = (byte) myNonce;
+        System.arraycopy(name, 0, p, 4, p.length - 4);
+        AdvertiseSettings s = new AdvertiseSettings.Builder().setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH).setConnectable(false).setTimeout(20000).build();
+        AdvertiseData d = new AdvertiseData.Builder().setIncludeDeviceName(false).addManufacturerData(COMPANY, p).build();
+        adv.startAdvertising(s, d, inviteAdvCb);
+        Toast.makeText(this, "Meghívás küldve: " + ANIMS[idx][0] + " (20 s)", Toast.LENGTH_SHORT).show();
+    }
+
+    final AdvertiseCallback inviteAdvCb = new AdvertiseCallback() {
+        @Override public void onStartFailure(int err) { runOnUiThread(() -> Toast.makeText(MainActivity.this, "Meghívás hiba: " + err, Toast.LENGTH_LONG).show()); }
+    };
+
+    // Low-power scan with a hardware filter on our manufacturer id; runs while the app is up.
+    @SuppressWarnings("MissingPermission")
+    void startInviteScan() {
+        BluetoothLeScanner sc = adapter.getBluetoothLeScanner();
+        if (sc == null || inviteScanning) return;
+        ScanFilter f = new ScanFilter.Builder().setManufacturerData(COMPANY, new byte[]{1}, new byte[]{(byte) 0xFF}).build();
+        ScanSettings s = new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build();
+        sc.startScan(Collections.singletonList(f), s, inviteCb);
+        inviteScanning = true;
+    }
+
+    @SuppressWarnings("MissingPermission")
+    void stopInviteScan() {
+        if (!inviteScanning) return;
+        inviteScanning = false;
+        BluetoothLeScanner sc = adapter.getBluetoothLeScanner();
+        if (sc != null) sc.stopScan(inviteCb);
+    }
+
+    final ScanCallback inviteCb = new ScanCallback() {
+        @Override
+        public void onScanResult(int type, ScanResult r) {
+            if (r.getScanRecord() == null) return;
+            byte[] p = r.getScanRecord().getManufacturerSpecificData(COMPANY);
+            if (p == null || p.length < 4 || p[0] != 1) return;
+            int idx = p[1] & 0xFF, nonce = ((p[2] & 0xFF) << 8) | (p[3] & 0xFF);
+            if (nonce == myNonce || nonce == lastInviteNonce || idx >= ANIMS.length) return;
+            lastInviteNonce = nonce;
+            String from = new String(p, 4, p.length - 4, java.nio.charset.StandardCharsets.UTF_8);
+            runOnUiThread(() -> new AlertDialog.Builder(MainActivity.this)
+                .setTitle("Meghívás")
+                .setMessage(from + " meghív: " + ANIMS[idx][0] + ". Csatlakozol?")
+                .setPositiveButton("Igen", (d, w) -> { showPage(2); startAnim(idx); })
+                .setNegativeButton("Nem", null)
+                .show());
+        }
+    };
 
     void start() {
         if (!visible) return;
@@ -538,13 +617,14 @@ public class MainActivity extends Activity {
             return;
         }
         scan();
+        startInviteScan();
     }
 
     @Override
     public void onRequestPermissionsResult(int code, String[] p, int[] res) {
         if (code == 3) { if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) startMic(); else Toast.makeText(this, "Mikrofon engedély kell a Zene animációhoz", Toast.LENGTH_LONG).show(); return; }
         for (int i = 0; i < res.length; i++) {
-            if (res[i] != PackageManager.PERMISSION_GRANTED && !p[i].endsWith("POST_NOTIFICATIONS")) { status.setText("Bluetooth engedély kell"); return; }
+            if (res[i] != PackageManager.PERMISSION_GRANTED && !p[i].endsWith("POST_NOTIFICATIONS") && !p[i].endsWith("BLUETOOTH_ADVERTISE")) { status.setText("Bluetooth engedély kell"); return; }
         }
         start();
     }
@@ -901,15 +981,21 @@ public class MainActivity extends Activity {
                 List<Bob> sel = ordered();
                 int total = Math.max(1, sel.size());
                 int[] shared = idx < MULTI ? animFrame(idx, animStep) : null;   // {r, g, b, wait ms}, same for every lamp
-                int wait = shared != null ? shared[3] : 150;
+                int wait = shared != null ? shared[3] : multiFrame(idx, 0, 0, 1)[3];
+                // Group mode: not all lamps on this phone -> named lamps take their wearer's slot and the clock's step.
+                boolean group = shared == null && sel.size() < PEOPLE.length;
+                int clockStep = (int) ((System.currentTimeMillis() / wait) % 1000000);
                 for (int k = 0; k < sel.size(); k++) {
                     Bob b = sel.get(k);
-                    int[] f = shared != null ? shared : multiFrame(idx, animStep, k, total);
-                    wait = f[3];
+                    int[] f;
+                    if (shared != null) f = shared;
+                    else if (group && b.person != null) f = multiFrame(idx, clockStep, rank(b), PEOPLE.length);
+                    else f = multiFrame(idx, animStep, k, total);
                     if (b.queue.size() < 3) { b.cur = new int[]{f[0], f[1], f[2]}; enqueue(b, Proto.rgb(b.fam, f[0], f[1], f[2])); }
                 }
                 animStep++;
-                ui.postDelayed(this, wait);
+                // Group mode: wake exactly at the next clock boundary so phones tick together.
+                ui.postDelayed(this, group ? wait - (System.currentTimeMillis() % wait) : wait);
             }
         };
         anim.run();
@@ -1096,6 +1182,7 @@ public class MainActivity extends Activity {
     @SuppressWarnings("MissingPermission")
     void disconnectAll() {
         stopScan();
+        stopInviteScan();
         ui.removeCallbacksAndMessages(null);
         levelup = null;
         anim = null;
