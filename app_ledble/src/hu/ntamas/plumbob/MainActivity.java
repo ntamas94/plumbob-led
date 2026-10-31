@@ -520,7 +520,7 @@ public class MainActivity extends Activity {
                 msg = "Frissítés hiba: " + e.getMessage();
             }
             String m = msg;
-            runOnUiThread(() -> Toast.makeText(this, m, Toast.LENGTH_LONG).show());
+            runOnUiThread(() -> { Toast.makeText(this, m, Toast.LENGTH_LONG).show(); status.setText(m); });
         }).start();
     }
 
