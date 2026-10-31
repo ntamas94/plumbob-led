@@ -107,6 +107,7 @@ public class MainActivity extends Activity {
     Button[] tabs;
     Runnable anim;
     int animStep, animWait;
+    int epoch;   // bumped on every mood/animation switch; delayed lambdas from the previous one check it and bail
     int hp = 100, hpMax = 100;
     TextView hpView;
     final ArrayDeque<Integer> seenAttacks = new ArrayDeque<>();
@@ -542,7 +543,7 @@ public class MainActivity extends Activity {
                     peak = Math.max(rms, peak * 0.97);              // adaptive ceiling: quiet rooms still move
                     double level = Math.max(0.06, Math.min(1.0, rms / Math.max(peak, 300)));
                     int[] c = {(int) (base[0] * level), (int) (base[1] * level), (int) (base[2] * level)};
-                    ui.post(() -> { for (Bob b : selected()) if (b.queue.size() < 2) { b.cur = c; enqueue(b, Proto.rgb(b.fam, c[0], c[1], c[2])); } });
+                    ui.post(() -> { if (!micOn) return; for (Bob b : selected()) if (b.queue.size() < 2) { b.cur = c; enqueue(b, Proto.rgb(b.fam, c[0], c[1], c[2])); } });
                 }
             } catch (Exception e) {
                 ui.post(() -> Toast.makeText(this, "Mikrofon hiba: " + e.getMessage(), Toast.LENGTH_LONG).show());
@@ -1036,12 +1037,12 @@ public class MainActivity extends Activity {
         setHp(hp - 1, false);
         Toast.makeText(this, from + " megtámadott! −1 HP", Toast.LENGTH_SHORT).show();
         if (hp == 0) { startAnim(20); return; }
-        stopAnim();
-        if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
+        fresh();
+        final int ep = epoch;
         mood = "hp";
         base = hpColor();
-        for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); enqueue(b, Proto.rgb(b.fam, 255, 255, 255)); }
-        ui.postDelayed(() -> { for (Bob b : selected()) { b.cur = new int[]{255, 255, 255}; fadeTo(b, hpColor()); } }, 200);
+        for (Bob b : selected()) { enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); enqueue(b, Proto.rgb(b.fam, 255, 255, 255)); }
+        ui.postDelayed(() -> { if (ep != epoch) return; for (Bob b : selected()) { b.cur = new int[]{255, 255, 255}; fadeTo(b, hpColor()); } }, 200);
     }
 
     void sendAttack(int target) {
@@ -1066,9 +1067,8 @@ public class MainActivity extends Activity {
 
     // Finger lands on the scale: stop whatever runs and make sure the lamps are on.
     void slideStart() {
-        stopAnim();
-        if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
-        for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
+        fresh();
+        for (Bob b : selected()) { enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
     }
 
     // Dragging: at most ~8 colour frames a second, the final position always goes out.
@@ -1088,14 +1088,21 @@ public class MainActivity extends Activity {
 
     void stopAnim() { if (anim != null) { ui.removeCallbacks(anim); anim = null; } stopMic(); }
 
+    // Every switch: new epoch, no leftover frames in the lamp queues, no running fades.
+    void fresh() {
+        epoch++;
+        stopAnim();
+        if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
+        for (Bob b : bobs.values()) { b.fadeId++; b.queue.clear(); }
+    }
+
     // One animation at a time; each tick sends one colour frame to every selected lamp (skipped if its queue is backed up).
     void startAnim(int idx) {
-        stopAnim();
+        fresh();
         groupMode = false;   // a plain tap runs the chase over this phone's own lamps; invitations switch group mode on
         curNonce = 0;        // games use it as their random seed; a group session sets it from the invitation
-        if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
         mood = "anim:" + idx;
-        for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
+        for (Bob b : selected()) { enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
         animStep = 0;
         animWait = idx < MULTI ? animFrame(idx, 0)[3] : 0;   // fixed-period animations can be clock-synced in a group
         if (idx == MIC) {
@@ -1325,8 +1332,7 @@ public class MainActivity extends Activity {
     void applyMood(String m) {
         mood = m;
         if (RGB.containsKey(m)) base = RGB.get(m);
-        stopAnim();
-        if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
+        fresh();
         List<Bob> sel = selected();
         if (sel.isEmpty()) Toast.makeText(this, "Nincs kiválasztott, csatlakozott lámpa", Toast.LENGTH_SHORT).show();
         for (Bob b : sel) moodFrames(b, m);
@@ -1334,10 +1340,9 @@ public class MainActivity extends Activity {
 
     // White/green flashing for 3 s, then back to happy green. Done app-side so the lamp ends in a known colour.
     void levelUp() {
-        if (levelup != null) ui.removeCallbacks(levelup);
-        stopAnim();
+        fresh();
         mood = "green";
-        for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
+        for (Bob b : selected()) { enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
         levelup = new Runnable() {
             int step = 0;
             public void run() {
@@ -1353,13 +1358,14 @@ public class MainActivity extends Activity {
     // Blink one lamp white/blue so you can tell which checkbox is which costume, then put its mood back.
     void identify(Bob b) {
         if (b.ch == null) return;
+        final int ep = epoch;
         b.fadeId++;
         enqueue(b, Proto.on(b.fam));
         for (int i = 0; i < 6; i++) {
             int[] c = RGB.get(i % 2 == 0 ? "white" : "blue");
-            ui.postDelayed(() -> { b.cur = c; enqueue(b, Proto.rgb(b.fam, c[0], c[1], c[2])); }, i * 300L);
+            ui.postDelayed(() -> { if (ep != epoch) return; b.cur = c; enqueue(b, Proto.rgb(b.fam, c[0], c[1], c[2])); }, i * 300L);
         }
-        ui.postDelayed(() -> moodFrames(b, mood), 1800);
+        ui.postDelayed(() -> { if (ep == epoch) moodFrames(b, mood); }, 1800);
     }
 
     @SuppressWarnings("MissingPermission")
