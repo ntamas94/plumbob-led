@@ -48,6 +48,8 @@ public class MainActivity extends Activity {
         "Hétszín villogás", "Piros villogás", "Zöld villogás", "Kék villogás", "Sárga villogás", "Cián villogás", "Lila villogás", "Fehér villogás",
         "Hétszín lélegzés",
     };
+    // App-side animations (colour frames pushed from the phone), see animFrame().
+    static final String[] ANIMS = {"Szívverés", "Tűz", "Sziréna", "Villám", "Disco", "Szellem", "Halloween", "WooHoo", "Zombi"};
     static final Map<String, int[]> RGB = new HashMap<>();
     static {
         RGB.put("green", new int[]{0, 255, 0});   // strongest green the lamp can do (the Sims 4 playeractivecolor 110,199,31 looked washed out)
@@ -87,9 +89,12 @@ public class MainActivity extends Activity {
     String whoSel;                                 // chosen lamp's MAC, null = everyone
     TextView status, seenView;
     final Set<String> seen = new TreeSet<>();   // every advertised name during this scan, for diagnosis
-    String mood = "green";   // colour key, "rainbow", "off", or "fx:<mode number>"
+    String mood = "green";   // colour key, "rainbow", "off", "fx:<mode number>" or "anim:<index>"
     int brightness = 100, speed = 50;
-    Spinner fx;
+    Spinner fx, an;
+    Runnable anim;
+    int animStep;
+    final Random rnd = new Random();
     Runnable levelup, pulser;
     boolean pulse;
     long pulseT0;
@@ -215,6 +220,35 @@ public class MainActivity extends Activity {
         });
         fxRow.addView(fx);
         root.addView(fxRow);
+
+        // Fun animations driven by the phone.
+        LinearLayout anRow = new LinearLayout(this);
+        anRow.setOrientation(LinearLayout.HORIZONTAL);
+        anRow.setGravity(Gravity.CENTER_VERTICAL);
+        anRow.setPadding(0, dp(6), 0, 0);
+        TextView anLabel = new TextView(this);
+        anLabel.setText("Animáció:  ");
+        anLabel.setTextSize(18);
+        anLabel.setTextColor(Color.WHITE);
+        anRow.addView(anLabel);
+        String[] anItems = new String[ANIMS.length + 1];
+        anItems[0] = "– nincs –";
+        System.arraycopy(ANIMS, 0, anItems, 1, ANIMS.length);
+        ArrayAdapter<String> anAd = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, anItems);
+        anAd.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        an = new Spinner(this);
+        an.setAdapter(anAd);
+        an.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        an.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            boolean first = true;
+            public void onItemSelected(AdapterView<?> a, android.view.View v, int pos, long id) {
+                if (first) { first = false; return; }
+                if (pos > 0) startAnim(pos - 1);
+            }
+            public void onNothingSelected(AdapterView<?> a) { }
+        });
+        anRow.addView(an);
+        root.addView(anRow);
 
         TextView sl = new TextView(this);
         sl.setText("Effekt sebessége");
@@ -615,7 +649,60 @@ public class MainActivity extends Activity {
         if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness));
         if ("rainbow".equals(m)) enqueue(b, Proto.mode(b.fam, b.fam == Proto.SMART ? 1 : 138));   // 138 = seven-colour gradient
         else if (m.startsWith("fx:")) { enqueue(b, Proto.mode(b.fam, Integer.parseInt(m.substring(3)))); enqueue(b, Proto.speed(b.fam, speed)); }
+        else if (m.startsWith("anim:")) { /* the running animation feeds the colours */ }
         else fadeTo(b, RGB.get(m));
+    }
+
+    void stopAnim() { if (anim != null) { ui.removeCallbacks(anim); anim = null; } }
+
+    // One animation at a time; each tick sends one colour frame to every selected lamp (skipped if its queue is backed up).
+    void startAnim(int idx) {
+        stopAnim();
+        if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
+        mood = "anim:" + idx;
+        if (fx.getSelectedItemPosition() != 0) fx.setSelection(0, false);
+        for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
+        animStep = 0;
+        anim = new Runnable() {
+            public void run() {
+                int[] f = animFrame(idx, animStep++);   // {r, g, b, wait ms}
+                for (Bob b : selected()) if (b.queue.size() < 3) { b.cur = new int[]{f[0], f[1], f[2]}; enqueue(b, Proto.rgb(b.fam, f[0], f[1], f[2])); }
+                ui.postDelayed(this, f[3]);
+            }
+        };
+        anim.run();
+    }
+
+    /** Colour and hold time of animation step n. */
+    int[] animFrame(int idx, int n) {
+        switch (idx) {
+            case 0: { // Szívverés: lub-dub, then rest
+                int k = n % 4;
+                return k == 0 || k == 2 ? new int[]{255, 0, 0, 120} : new int[]{35, 0, 0, k == 1 ? 140 : 700};
+            }
+            case 1: // Tűz: flickering orange
+                return new int[]{255, 30 + rnd.nextInt(110), 0, 70 + rnd.nextInt(90)};
+            case 2: // Sziréna: red / blue
+                return n % 2 == 0 ? new int[]{255, 0, 0, 250} : new int[]{0, 0, 255, 250};
+            case 3: // Villám: dark sky with random white strikes
+                return rnd.nextInt(100) < 15 ? new int[]{255, 255, 255, 60} : new int[]{8, 8, 40, 150};
+            case 4: { // Disco: random pure colours
+                int[][] p = {{255,0,0},{0,255,0},{0,0,255},{255,255,0},{0,255,255},{255,0,255}};
+                int[] c = p[rnd.nextInt(p.length)];
+                return new int[]{c[0], c[1], c[2], 200};
+            }
+            case 5: { // Szellem: pale blue slow breathing
+                double s = 0.2 + 0.8 * (0.5 + 0.5 * Math.sin(n / 10.0));
+                return new int[]{(int) (120 * s), (int) (200 * s), (int) (255 * s), 100};
+            }
+            case 6: // Halloween: orange / purple
+                return n % 2 == 0 ? new int[]{255, 80, 0, 500} : new int[]{120, 0, 200, 500};
+            case 7: // WooHoo: pinks with a white sparkle
+                if (n % 6 == 5) return new int[]{255, 255, 255, 80};
+                return n % 2 == 0 ? new int[]{255, 40, 120, 300} : new int[]{255, 0, 60, 300};
+            default: // Zombi: sickly greens, slow
+                return n % 2 == 0 ? new int[]{0, 80, 0, 800} : new int[]{50, 140, 0, 800};
+        }
     }
 
     static int lerp(int a, int b, float t) { return Math.round(a + (b - a) * t); }
@@ -654,6 +741,8 @@ public class MainActivity extends Activity {
 
     void applyMood(String m) {
         mood = m;
+        stopAnim();
+        if (an.getSelectedItemPosition() != 0) an.setSelection(0, false);
         if (!m.startsWith("fx:") && fx.getSelectedItemPosition() != 0) fx.setSelection(0, false);   // a mood colour ends the effect
         if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
         List<Bob> sel = selected();
@@ -664,6 +753,8 @@ public class MainActivity extends Activity {
     // White/green flashing for 3 s, then back to happy green. Done app-side so the lamp ends in a known colour.
     void levelUp() {
         if (levelup != null) ui.removeCallbacks(levelup);
+        stopAnim();
+        if (an.getSelectedItemPosition() != 0) an.setSelection(0, false);
         mood = "green";
         for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
         levelup = new Runnable() {
@@ -695,6 +786,7 @@ public class MainActivity extends Activity {
         stopScan();
         ui.removeCallbacksAndMessages(null);
         levelup = null;
+        anim = null;
         connecting = null;
         toConnect.clear();
         for (Bob b : bobs.values()) if (b.gatt != null) b.gatt.close();
