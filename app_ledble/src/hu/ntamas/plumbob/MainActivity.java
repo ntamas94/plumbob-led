@@ -110,7 +110,7 @@ public class MainActivity extends Activity {
     int epoch;   // bumped on every mood/animation switch; delayed lambdas from the previous one check it and bail
     int hp = 100, hpMax = 100;
     TextView hpView;
-    final ArrayDeque<Integer> seenAttacks = new ArrayDeque<>();
+    final ArrayDeque<Integer> seenAttacks = new ArrayDeque<>(), seenAcks = new ArrayDeque<>();
     int[] base = {0, 255, 0};   // last static colour, used by the chase animations
     final Random rnd = new Random();
     SeekBar moodBar;
@@ -647,7 +647,8 @@ public class MainActivity extends Activity {
         if (sc == null) return;
         if (inviteScanning) sc.stopScan(inviteCb);
         ScanFilter f = new ScanFilter.Builder().setManufacturerData(COMPANY, new byte[0]).build();   // any of our beacons
-        ScanSettings s = new ScanSettings.Builder().setScanMode(fast ? ScanSettings.SCAN_MODE_LOW_LATENCY : ScanSettings.SCAN_MODE_LOW_POWER).build();
+        // Always low latency while the app is up: beacons last seconds and a low-power scan listens only 0.5 s in 5.
+        ScanSettings s = new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
         sc.startScan(Collections.singletonList(f), s, inviteCb);
         inviteScanning = true;
     }
@@ -674,7 +675,7 @@ public class MainActivity extends Activity {
         public void onScanResult(int type, ScanResult r) {
             if (r.getScanRecord() == null) return;
             byte[] p = r.getScanRecord().getManufacturerSpecificData(COMPANY);
-            if (p == null || p.length < 8 || p[0] < 1 || p[0] > 3) return;
+            if (p == null || p.length < 8 || p[0] < 1 || p[0] > 4) return;
             int kind = p[0], idx = p[1] & 0xFF, nonce = ((p[2] & 0xFF) << 8) | (p[3] & 0xFF), mask = p[4] & 0xFF;
             int[] col = {p[5] & 0xFF, p[6] & 0xFF, p[7] & 0xFF};
             String from = new String(p, 8, p.length - 8, java.nio.charset.StandardCharsets.UTF_8);
@@ -685,6 +686,16 @@ public class MainActivity extends Activity {
                     while (seenAttacks.size() > 32) seenAttacks.poll();
                     showPage(3);
                     hit(from);
+                    advertise(4, idx, nonce, 6000, ackAdvCb);   // tell the attacker it landed
+                });
+                return;
+            }
+            if (kind == 4) {   // acknowledgement of our attack
+                runOnUiThread(() -> {
+                    if (!seenAttacks.contains(nonce) || seenAcks.contains(nonce)) return;
+                    seenAcks.add(nonce);
+                    while (seenAcks.size() > 32) seenAcks.poll();
+                    Toast.makeText(MainActivity.this, "Talált: " + from, Toast.LENGTH_SHORT).show();
                 });
                 return;
             }
@@ -1071,10 +1082,11 @@ public class MainActivity extends Activity {
         int nonce = rnd.nextInt(65536);
         seenAttacks.add(nonce);
         if ((myMask() & (1 << target)) != 0) { hit(myName()); }   // hitting someone on this phone (or yourself)
-        if (advertise(3, target, nonce, 4000, attackAdvCb)) Toast.makeText(this, "Támadás: " + PEOPLE[target], Toast.LENGTH_SHORT).show();
+        if (advertise(3, target, nonce, 10000, attackAdvCb)) Toast.makeText(this, "Támadás: " + PEOPLE[target] + "…", Toast.LENGTH_SHORT).show();
     }
 
     final AdvertiseCallback attackAdvCb = new AdvertiseCallback() { };
+    final AdvertiseCallback ackAdvCb = new AdvertiseCallback() { };
 
     /** Colour at position t (0 = happy green, 1 = critical red) of the plumbob scale. */
     static int[] plumbobColor(float t) {
