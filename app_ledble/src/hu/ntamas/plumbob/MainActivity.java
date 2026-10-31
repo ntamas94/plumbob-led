@@ -214,6 +214,8 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         }
         link.scan();
         beacons.startScan();
+        ui.removeCallbacks(presence);
+        ui.postDelayed(presence, 2000);
     }
 
     String[] perms() {
@@ -429,13 +431,50 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         for (int m : new int[]{10, 20, 30, 50, 100}) maxGrid.addView(pill("" + m, "#DDDDDD", 14, dp(44), () -> setHpMax(m)));
         page.addView(maxGrid);
         page.addView(hint("A gombok a „Kinek” szerint kiválasztott lámpá(k)ra hatnak. Életerő lámpánként (személyenként) számolódik."));
-        TextView atkLabel = text("Támadás (−1 HP a másik telefonján, Bluetooth-on)", Color.WHITE, 14);
+        TextView atkLabel = text("Támadás (−1 HP a másik telefonján, Bluetooth-on) – csak aki itt van", Color.WHITE, 14);
         atkLabel.setPadding(0, dp(10), 0, 0);
         page.addView(atkLabel);
-        GridLayout atkGrid = grid(4);
-        for (int i = 0; i < PEOPLE.length; i++) { final int t = i; atkGrid.addView(pill(PEOPLE[i], "#FFAA55", 14, dp(48), () -> sendAttack(t))); }
+        atkGrid = grid(4);
         page.addView(atkGrid);
+        rebuildAttackButtons();
     }
+
+    // ---- who is around: our own named lamps + wearers whose phones we heard in the last 45 s ----
+    static final int PRESENCE_EVERY_MS = 15000, PRESENCE_ADVERT_MS = 3000, PRESENCE_TTL_MS = 45000;
+    final long[] lastHeard = new long[PEOPLE.length];   // uptime ms per wearer, 0 = never
+    GridLayout atkGrid;
+
+    void notePresence(int mask) {
+        long now = android.os.SystemClock.uptimeMillis();
+        boolean changed = false;
+        for (int i = 0; i < PEOPLE.length; i++) if ((mask & (1 << i)) != 0) { changed |= !present(i); lastHeard[i] = now; }
+        if (changed) rebuildAttackButtons();
+    }
+
+    boolean present(int i) {
+        return (myMask() & (1 << i)) != 0 || (lastHeard[i] != 0 && android.os.SystemClock.uptimeMillis() - lastHeard[i] < PRESENCE_TTL_MS);
+    }
+
+    void rebuildAttackButtons() {
+        atkGrid.removeAllViews();
+        int n = 0;
+        for (int i = 0; i < PEOPLE.length; i++) {
+            if (!present(i)) continue;
+            final int t = i;
+            atkGrid.addView(pill(PEOPLE[i], "#FFAA55", 14, dp(48), () -> sendAttack(t)));
+            n++;
+        }
+        if (n == 0) atkGrid.addView(text("Senkit nem látunk még (Kié?-név kell mindenkinél, app nyitva)", 0xCCFFFFFF, 13));
+    }
+
+    /** Every 15 s: tell the others who is on this phone, forget wearers not heard of for 45 s. */
+    final Runnable presence = new Runnable() {
+        public void run() {
+            if (myMask() != 0) beacons.send(Beacons.PRESENCE, 0, rnd.nextInt(65536), myMask(), base, myName(), PRESENCE_ADVERT_MS);
+            rebuildAttackButtons();   // drops the expired ones
+            ui.postDelayed(this, PRESENCE_EVERY_MS);
+        }
+    };
 
     void buildSettingsPage(LinearLayout page) {
         page.setPadding(0, dp(8), 0, 0);
@@ -537,6 +576,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
             if (r != null) r.label.setText(lamp.label());
             rebuildWho();
             showHp(false);
+            rebuildAttackButtons();
         }).show();
     }
 
@@ -592,6 +632,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         Integer kept = hpByMac.get(lamp.mac());
         if (kept != null) lamp.hp = Math.min(kept, hpMax);
         showHp(false);
+        rebuildAttackButtons();
         // The lamp kept its colour across the drop; re-apply what THIS lamp last showed, not the phone-wide mood.
         if (levelup == null) moodFrames(lamp, lamp.mood != null ? lamp.mood : mood);
     }
@@ -921,7 +962,9 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     @Override public void onSendFailed(int err) { toast("Meghívás hiba: " + err); }
 
     @Override public void onBeacon(Beacons.Msg m) {
+        notePresence(m.mask);   // every beacon says who is on the sending phone
         switch (m.kind) {
+            case Beacons.PRESENCE: break;
             case Beacons.ATTACK: onAttack(m); break;
             case Beacons.ACK: onAck(m); break;
             default: onInviteOrAccept(m);
