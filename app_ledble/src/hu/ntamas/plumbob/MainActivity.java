@@ -107,7 +107,7 @@ public class MainActivity extends Activity {
     Button[] tabs;
     Runnable anim;
     int animStep, animWait;
-    int hp = 20, hpMax = 20;
+    int hp = 100, hpMax = 100;
     TextView hpView;
     final ArrayDeque<Integer> seenAttacks = new ArrayDeque<>();
     int[] base = {0, 255, 0};   // last static colour, used by the chase animations
@@ -345,6 +345,8 @@ public class MainActivity extends Activity {
         hpGrid.addView(pill("+1", "#77EE77", 24, dp(72), () -> setHp(hp + 1)));
         hpGrid.addView(pill("−5", "#EE4444", 20, dp(56), () -> setHp(hp - 5)));
         hpGrid.addView(pill("+5", "#44CC44", 20, dp(56), () -> setHp(hp + 5)));
+        hpGrid.addView(pill("−10", "#CC2222", 20, dp(56), () -> setHp(hp - 10)));
+        hpGrid.addView(pill("+10", "#22AA22", 20, dp(56), () -> setHp(hp + 10)));
         hpGrid.addView(pill("Halott (0)", "#999999", 16, dp(56), () -> setHp(0)));
         hpGrid.addView(pill("Teli", "#BBDDFF", 16, dp(56), () -> setHp(hpMax)));
         pages[3].addView(hpGrid);
@@ -354,8 +356,8 @@ public class MainActivity extends Activity {
         maxL.setPadding(0, dp(8), 0, 0);
         pages[3].addView(maxL);
         GridLayout maxGrid = new GridLayout(this);
-        maxGrid.setColumnCount(4);
-        for (int m : new int[]{10, 20, 30, 50}) maxGrid.addView(pill("" + m, "#DDDDDD", 15, dp(44), () -> { hpMax = m; setHp(m); }));
+        maxGrid.setColumnCount(5);
+        for (int m : new int[]{10, 20, 30, 50, 100}) maxGrid.addView(pill("" + m, "#DDDDDD", 14, dp(44), () -> { hpMax = m; setHp(m); }));
         pages[3].addView(maxGrid);
         TextView atkL = new TextView(this);
         atkL.setText("Támadás (−1 HP a másik telefonján, Bluetooth-on)");
