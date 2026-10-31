@@ -48,8 +48,14 @@ public class MainActivity extends Activity {
         "Hétszín villogás", "Piros villogás", "Zöld villogás", "Kék villogás", "Sárga villogás", "Cián villogás", "Lila villogás", "Fehér villogás",
         "Hétszín lélegzés",
     };
-    // App-side animations (colour frames pushed from the phone), see animFrame().
-    static final String[] ANIMS = {"Szívverés", "Tűz", "Sziréna", "Villám", "Disco", "Szellem", "Halloween", "WooHoo", "Zombi"};
+    // App-side animations (colour frames pushed from the phone), {name, button colour}; order = case index in animFrame().
+    static final String[][] ANIMS = {
+        {"Szívverés", "#EE3333"}, {"Tűz", "#FF8800"}, {"Sziréna", "#6688FF"}, {"Villám", "#DDDDEE"}, {"Disco", "#CC66FF"},
+        {"Szellem", "#BBEEFF"}, {"Halloween", "#FF9933"}, {"WooHoo", "#FF77C8"}, {"Zombi", "#66AA33"},
+        {"Szivárvány-hullám", "#FFCC66"}, {"Gyertya", "#FFD27F"}, {"Boszorkány", "#99FF66"}, {"Vámpír", "#AA2222"},
+        {"Alien", "#66FFCC"}, {"Simoleon", "#FFD700"}, {"Strobo", "#FFFFFF"}, {"Karácsony", "#FF6666"},
+        {"Magyar zászló", "#DDFFDD"}, {"Tévé", "#AACCFF"}, {"Éhező Sim", "#CCDD55"}, {"Kaszás", "#999999"},
+    };
     static final Map<String, int[]> RGB = new HashMap<>();
     static {
         RGB.put("green", new int[]{0, 255, 0});   // strongest green the lamp can do (the Sims 4 playeractivecolor 110,199,31 looked washed out)
@@ -91,7 +97,8 @@ public class MainActivity extends Activity {
     final Set<String> seen = new TreeSet<>();   // every advertised name during this scan, for diagnosis
     String mood = "green";   // colour key, "rainbow", "off", "fx:<mode number>" or "anim:<index>"
     int brightness = 100, speed = 50;
-    Spinner fx, an;
+    LinearLayout[] pages;
+    Button[] tabs;
     Runnable anim;
     int animStep;
     final Random rnd = new Random();
@@ -128,12 +135,6 @@ public class MainActivity extends Activity {
         title.setShadowLayer(6f, 0f, 3f, 0x99000000);
         title.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         titleRow.addView(title);
-        Button gear = new Button(this);
-        gear.setText("⚙");
-        gear.setTextSize(24);
-        gear.setOnClickListener(v -> settings.setVisibility(settings.getVisibility() == android.view.View.VISIBLE
-            ? android.view.View.GONE : android.view.View.VISIBLE));
-        titleRow.addView(gear);
         root.addView(titleRow);
 
         status = new TextView(this);
@@ -167,94 +168,82 @@ public class MainActivity extends Activity {
         root.addView(whoRow);
         rebuildWho();
 
+        // Tabs: one page visible at a time; "Kinek", brightness and pulse stay outside the pages.
+        LinearLayout tabBar = new LinearLayout(this);
+        tabBar.setOrientation(LinearLayout.HORIZONTAL);
+        tabBar.setPadding(0, dp(8), 0, dp(4));
+        String[] tabNames = {"Hangulat", "Effekt", "Animáció", "Beállítások"};
+        pages = new LinearLayout[tabNames.length];
+        tabs = new Button[tabNames.length];
+        for (int i = 0; i < tabNames.length; i++) {
+            final int idx = i;
+            pages[i] = new LinearLayout(this);
+            pages[i].setOrientation(LinearLayout.VERTICAL);
+            Button t = new Button(this);
+            t.setText(tabNames[i]);
+            t.setAllCaps(false);
+            t.setTextSize(13);
+            t.setSingleLine(true);
+            t.setPadding(0, 0, 0, 0);
+            t.setMinWidth(0);
+            t.setMinimumWidth(0);
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            tlp.setMargins(dp(2), 0, dp(2), 0);
+            t.setLayoutParams(tlp);
+            t.setOnClickListener(v -> showPage(idx));
+            tabs[i] = t;
+            tabBar.addView(t);
+        }
+        root.addView(tabBar);
+
+        // Page 0: plumbob scale slider (green -> yellow -> orange -> red) + mood buttons.
+        TextView ml = new TextView(this);
+        ml.setText("Plumbob-skála:  Kiváló  ◀━━━▶  Kritikus");
+        ml.setTextColor(Color.WHITE);
+        ml.setGravity(Gravity.CENTER);
+        ml.setPadding(0, dp(6), 0, 0);
+        pages[0].addView(ml);
+        android.widget.FrameLayout slideBox = new android.widget.FrameLayout(this);
+        android.view.View bar = new android.view.View(this);
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0xFF00FF00, 0xFFFFD200, 0xFFFF5000, 0xFFFF0000});
+        g.setCornerRadius(dp(10));
+        bar.setBackground(g);
+        android.widget.FrameLayout.LayoutParams blp2 = new android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.MATCH_PARENT, dp(18), Gravity.CENTER_VERTICAL);
+        blp2.setMargins(dp(16), 0, dp(16), 0);
+        bar.setLayoutParams(blp2);
+        slideBox.addView(bar);
+        SeekBar moodBar = new SeekBar(this);
+        moodBar.setMax(100);
+        moodBar.setProgress(0);
+        moodBar.setProgressTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT));
+        moodBar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT));
+        moodBar.setPadding(dp(16), dp(14), dp(16), dp(14));
+        moodBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar s, int p, boolean user) { if (user) slideMood(p, false); }
+            public void onStartTrackingTouch(SeekBar s) { slideStart(); }
+            public void onStopTrackingTouch(SeekBar s) { slideMood(s.getProgress(), true); }
+        });
+        slideBox.addView(moodBar);
+        pages[0].addView(slideBox);
+
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(2);
-        for (String[] m : MOODS) {
-            Button btn = new Button(this);
-            btn.setText(m[0]);
-            btn.setTextSize(20);
-            btn.setTextColor(Color.BLACK);
-            btn.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-            btn.setAllCaps(false);
-            GradientDrawable bg = new GradientDrawable();
-            bg.setColor(Color.parseColor(m[2]));
-            bg.setCornerRadius(dp(26));
-            bg.setStroke(dp(3), Color.WHITE);
-            btn.setBackground(bg);
-            GridLayout.LayoutParams lp = new GridLayout.LayoutParams(
-                GridLayout.spec(GridLayout.UNDEFINED, 1f), GridLayout.spec(GridLayout.UNDEFINED, 1f));
-            lp.width = 0;
-            lp.height = dp(72);
-            lp.setMargins(dp(6), dp(6), dp(6), dp(6));
-            btn.setLayoutParams(lp);
-            btn.setOnClickListener(v -> { if ("levelup".equals(m[1])) levelUp(); else applyMood(m[1]); });
-            grid.addView(btn);
+        for (String[] m : MOODS) grid.addView(pill(m[0], m[2], 20, dp(72), () -> { if ("levelup".equals(m[1])) levelUp(); else applyMood(m[1]); }));
+        pages[0].addView(grid);
+
+        // Page 1: the lamp's built-in effects + their speed.
+        GridLayout fxGrid = new GridLayout(this);
+        fxGrid.setColumnCount(2);
+        for (int i = 0; i < EFFECTS.length; i++) {
+            final int mode = 135 + i;
+            fxGrid.addView(pill(EFFECTS[i], "#BBDDFF", 15, dp(56), () -> applyMood("fx:" + mode)));
         }
-        root.addView(grid);
-
-        // Built-in effects of the lamp + their speed.
-        LinearLayout fxRow = new LinearLayout(this);
-        fxRow.setOrientation(LinearLayout.HORIZONTAL);
-        fxRow.setGravity(Gravity.CENTER_VERTICAL);
-        fxRow.setPadding(0, dp(10), 0, 0);
-        TextView fxLabel = new TextView(this);
-        fxLabel.setText("Effekt:  ");
-        fxLabel.setTextSize(18);
-        fxLabel.setTextColor(Color.WHITE);
-        fxRow.addView(fxLabel);
-        String[] fxItems = new String[EFFECTS.length + 1];
-        fxItems[0] = "– nincs (hangulat-szín) –";
-        System.arraycopy(EFFECTS, 0, fxItems, 1, EFFECTS.length);
-        ArrayAdapter<String> fxAd = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, fxItems);
-        fxAd.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        fx = new Spinner(this);
-        fx.setAdapter(fxAd);
-        fx.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        fx.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            boolean first = true;
-            public void onItemSelected(AdapterView<?> a, android.view.View v, int pos, long id) {
-                if (first) { first = false; return; }   // the initial selection is not a tap
-                if (pos > 0) applyMood("fx:" + (135 + pos - 1));
-            }
-            public void onNothingSelected(AdapterView<?> a) { }
-        });
-        fxRow.addView(fx);
-        root.addView(fxRow);
-
-        // Fun animations driven by the phone.
-        LinearLayout anRow = new LinearLayout(this);
-        anRow.setOrientation(LinearLayout.HORIZONTAL);
-        anRow.setGravity(Gravity.CENTER_VERTICAL);
-        anRow.setPadding(0, dp(6), 0, 0);
-        TextView anLabel = new TextView(this);
-        anLabel.setText("Animáció:  ");
-        anLabel.setTextSize(18);
-        anLabel.setTextColor(Color.WHITE);
-        anRow.addView(anLabel);
-        String[] anItems = new String[ANIMS.length + 1];
-        anItems[0] = "– nincs –";
-        System.arraycopy(ANIMS, 0, anItems, 1, ANIMS.length);
-        ArrayAdapter<String> anAd = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, anItems);
-        anAd.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        an = new Spinner(this);
-        an.setAdapter(anAd);
-        an.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        an.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            boolean first = true;
-            public void onItemSelected(AdapterView<?> a, android.view.View v, int pos, long id) {
-                if (first) { first = false; return; }
-                if (pos > 0) startAnim(pos - 1);
-            }
-            public void onNothingSelected(AdapterView<?> a) { }
-        });
-        anRow.addView(an);
-        root.addView(anRow);
-
+        pages[1].addView(fxGrid);
         TextView sl = new TextView(this);
         sl.setText("Effekt sebessége");
         sl.setTextColor(Color.WHITE);
         sl.setPadding(0, dp(10), 0, dp(4));
-        root.addView(sl);
+        pages[1].addView(sl);
         SeekBar speedBar = new SeekBar(this);
         speedBar.setMax(100);
         speedBar.setProgress(speed);
@@ -266,7 +255,16 @@ public class MainActivity extends Activity {
                 for (Bob x : selected()) enqueue(x, Proto.speed(x.fam, speed));
             }
         });
-        root.addView(speedBar);
+        pages[1].addView(speedBar);
+
+        // Page 2: animations driven by the phone.
+        GridLayout anGrid = new GridLayout(this);
+        anGrid.setColumnCount(2);
+        for (int i = 0; i < ANIMS.length; i++) {
+            final int a = i;
+            anGrid.addView(pill(ANIMS[i][0], ANIMS[i][1], 15, dp(56), () -> startAnim(a)));
+        }
+        pages[2].addView(anGrid);
 
         LinearLayout blRow = new LinearLayout(this);
         blRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -297,11 +295,9 @@ public class MainActivity extends Activity {
         });
         root.addView(bright);
 
-        // Settings panel (gear): which lamp belongs to whom, rescan, diagnostics. Hidden by default.
-        settings = new LinearLayout(this);
-        settings.setOrientation(LinearLayout.VERTICAL);
-        settings.setVisibility(android.view.View.GONE);
-        settings.setPadding(0, dp(16), 0, 0);
+        // Page 3: settings – which lamp belongs to whom, rescan, update, diagnostics.
+        settings = pages[3];
+        settings.setPadding(0, dp(8), 0, 0);
         TextView sTitle = new TextView(this);
         sTitle.setText("Lámpák – kié melyik?");
         sTitle.setTextSize(20);
@@ -334,7 +330,10 @@ public class MainActivity extends Activity {
         seenView.setTextSize(12);
         seenView.setPadding(0, dp(8), 0, 0);
         settings.addView(seenView);
-        root.addView(settings);
+
+        // Pages go right under the tab bar (before brightness), which sits lower in root.
+        for (int i = 0; i < pages.length; i++) root.addView(pages[i], root.indexOfChild(tabBar) + 1 + i);
+        showPage(0);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
@@ -557,6 +556,37 @@ public class MainActivity extends Activity {
 
     String label(Bob b) { return b.person == null ? b.name : b.person + "  (" + b.name + ")"; }
 
+    // Rounded, white-bordered Sims-style button for the 2-column grids.
+    Button pill(String text, String color, int textSp, int heightPx, Runnable onClick) {
+        Button btn = new Button(this);
+        btn.setText(text);
+        btn.setTextSize(textSp);
+        btn.setTextColor(Color.BLACK);
+        btn.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        btn.setAllCaps(false);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.parseColor(color));
+        bg.setCornerRadius(dp(26));
+        bg.setStroke(dp(3), Color.WHITE);
+        btn.setBackground(bg);
+        GridLayout.LayoutParams lp = new GridLayout.LayoutParams(
+            GridLayout.spec(GridLayout.UNDEFINED, 1f), GridLayout.spec(GridLayout.UNDEFINED, 1f));
+        lp.width = 0;
+        lp.height = heightPx;
+        lp.setMargins(dp(5), dp(5), dp(5), dp(5));
+        btn.setLayoutParams(lp);
+        btn.setOnClickListener(v -> onClick.run());
+        return btn;
+    }
+
+    void showPage(int i) {
+        for (int k = 0; k < pages.length; k++) {
+            pages[k].setVisibility(k == i ? android.view.View.VISIBLE : android.view.View.GONE);
+            tabs[k].setAlpha(k == i ? 1f : 0.55f);
+            tabs[k].setTypeface(k == i ? android.graphics.Typeface.DEFAULT_BOLD : android.graphics.Typeface.DEFAULT);
+        }
+    }
+
     int versionCode() {
         try { return (int) getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode(); }
         catch (PackageManager.NameNotFoundException e) { return 0; }
@@ -676,7 +706,40 @@ public class MainActivity extends Activity {
         if ("rainbow".equals(m)) enqueue(b, Proto.mode(b.fam, b.fam == Proto.SMART ? 1 : 138));   // 138 = seven-colour gradient
         else if (m.startsWith("fx:")) { enqueue(b, Proto.mode(b.fam, Integer.parseInt(m.substring(3)))); enqueue(b, Proto.speed(b.fam, speed)); }
         else if (m.startsWith("anim:")) { /* the running animation feeds the colours */ }
+        else if (m.startsWith("rgb:")) { String[] p = m.substring(4).split(","); fadeTo(b, new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2])}); }
         else fadeTo(b, RGB.get(m));
+    }
+
+    /** Colour at position t (0 = happy green, 1 = critical red) of the plumbob scale. */
+    static int[] plumbobColor(float t) {
+        int[][] stops = {{0, 255, 0}, {255, 210, 0}, {255, 80, 0}, {255, 0, 0}};
+        float u = Math.max(0f, Math.min(1f, t)) * (stops.length - 1);
+        int i = Math.min((int) u, stops.length - 2);
+        float f = u - i;
+        return new int[]{lerp(stops[i][0], stops[i + 1][0], f), lerp(stops[i][1], stops[i + 1][1], f), lerp(stops[i][2], stops[i + 1][2], f)};
+    }
+
+    long lastSlide;
+
+    // Finger lands on the scale: stop whatever runs and make sure the lamps are on.
+    void slideStart() {
+        stopAnim();
+        if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
+        for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
+    }
+
+    // Dragging: at most ~8 colour frames a second, the final position always goes out.
+    void slideMood(int pct, boolean fin) {
+        long now = System.currentTimeMillis();
+        if (!fin && now - lastSlide < 120) return;
+        lastSlide = now;
+        int[] c = plumbobColor(pct / 100f);
+        mood = "rgb:" + c[0] + "," + c[1] + "," + c[2];
+        for (Bob b : selected()) {
+            b.fadeId++;
+            b.cur = c;
+            if (fin || b.queue.size() < 2) enqueue(b, Proto.rgb(b.fam, c[0], c[1], c[2]));
+        }
     }
 
     void stopAnim() { if (anim != null) { ui.removeCallbacks(anim); anim = null; } }
@@ -686,7 +749,6 @@ public class MainActivity extends Activity {
         stopAnim();
         if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
         mood = "anim:" + idx;
-        if (fx.getSelectedItemPosition() != 0) fx.setSelection(0, false);
         for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
         animStep = 0;
         anim = new Runnable() {
@@ -726,9 +788,51 @@ public class MainActivity extends Activity {
             case 7: // WooHoo: pinks with a white sparkle
                 if (n % 6 == 5) return new int[]{255, 255, 255, 80};
                 return n % 2 == 0 ? new int[]{255, 40, 120, 300} : new int[]{255, 0, 60, 300};
-            default: // Zombi: sickly greens, slow
+            case 8: // Zombi: sickly greens, slow
                 return n % 2 == 0 ? new int[]{0, 80, 0, 800} : new int[]{50, 140, 0, 800};
+            case 9: // Szivárvány-hullám: smooth hue sweep
+                return hsv((n * 6) % 360, 100);
+            case 10: // Gyertya: warm, lazy flicker
+                return new int[]{255, 120 + rnd.nextInt(60), 10 + rnd.nextInt(20), 120 + rnd.nextInt(160)};
+            case 11: // Boszorkány: purple / poison green
+                return n % 2 == 0 ? new int[]{140, 0, 220, 600} : new int[]{60, 255, 0, 600};
+            case 12: { // Vámpír: deep red breathing
+                double s = 0.15 + 0.85 * (0.5 + 0.5 * Math.sin(n / 8.0));
+                return new int[]{(int) (255 * s), 0, 0, 100};
+            }
+            case 13: // Alien: green / purple strobes, white blip
+                if (n % 8 == 7) return new int[]{255, 255, 255, 60};
+                return n % 2 == 0 ? new int[]{0, 255, 80, 150} : new int[]{160, 0, 255, 150};
+            case 14: // Simoleon: gold with sparkles
+                return rnd.nextInt(100) < 20 ? new int[]{255, 255, 200, 60} : new int[]{255, 180, 0, 150};
+            case 15: // Strobo
+                return n % 2 == 0 ? new int[]{255, 255, 255, 50} : new int[]{0, 0, 0, 50};
+            case 16: { // Karácsony: red / green / white jumps
+                int[][] p = {{255, 0, 0}, {0, 255, 0}, {255, 255, 255}};
+                int[] c = p[n % 3];
+                return new int[]{c[0], c[1], c[2], 500};
+            }
+            case 17: { // Magyar zászló: piros, fehér, zöld
+                int[][] p = {{255, 0, 0}, {255, 255, 255}, {0, 255, 0}};
+                int[] c = p[n % 3];
+                return new int[]{c[0], c[1], c[2], 600};
+            }
+            case 18: { // Tévé: bluish flicker
+                int v = 60 + rnd.nextInt(196);
+                return new int[]{(int) (v * 0.7), (int) (v * 0.8), v, 60 + rnd.nextInt(120)};
+            }
+            case 19: { // Éhező Sim: plumbob decays green -> yellow -> orange -> red over ~20 s, then starts over
+                int[] c = plumbobColor((n % 100) / 100f);
+                return new int[]{c[0], c[1], c[2], 200};
+            }
+            default: // Kaszás: near-dark with ghostly flickers
+                return rnd.nextInt(100) < 10 ? new int[]{90, 90, 110, 80} : new int[]{2, 2, 4, 200};
         }
+    }
+
+    static int[] hsv(float hue, int waitMs) {
+        int c = Color.HSVToColor(new float[]{hue, 1f, 1f});
+        return new int[]{Color.red(c), Color.green(c), Color.blue(c), waitMs};
     }
 
     static int lerp(int a, int b, float t) { return Math.round(a + (b - a) * t); }
@@ -768,8 +872,6 @@ public class MainActivity extends Activity {
     void applyMood(String m) {
         mood = m;
         stopAnim();
-        if (an.getSelectedItemPosition() != 0) an.setSelection(0, false);
-        if (!m.startsWith("fx:") && fx.getSelectedItemPosition() != 0) fx.setSelection(0, false);   // a mood colour ends the effect
         if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
         List<Bob> sel = selected();
         if (sel.isEmpty()) Toast.makeText(this, "Nincs kiválasztott, csatlakozott lámpa", Toast.LENGTH_SHORT).show();
@@ -780,7 +882,6 @@ public class MainActivity extends Activity {
     void levelUp() {
         if (levelup != null) ui.removeCallbacks(levelup);
         stopAnim();
-        if (an.getSelectedItemPosition() != 0) an.setSelection(0, false);
         mood = "green";
         for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
         levelup = new Runnable() {
