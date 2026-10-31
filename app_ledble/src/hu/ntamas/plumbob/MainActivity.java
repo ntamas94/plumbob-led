@@ -324,7 +324,7 @@ public class MainActivity extends Activity {
         settings.addView(upd);
 
         TextView hint = new TextView(this);
-        hint.setText("Hosszú nyomás a lámpa nevén: villan, hogy lásd, melyik az. „Kié?”: név a lámpához, a telefon megjegyzi.");
+        hint.setText("Hosszú nyomás a lámpa nevén: villan, hogy lásd, melyik az. „Kié?”: név a lámpához, a telefon megjegyzi. Animáció vagy Lüktetés közben az app háttérben is megy (értesítés a sávban), statikus színnél kilépéskor elenged, a lámpa megjegyzi a színt.");
         hint.setTextColor(0xCCFFFFFF);
         hint.setPadding(0, dp(8), 0, 0);
         settings.addView(hint);
@@ -343,9 +343,32 @@ public class MainActivity extends Activity {
         setContentView(scroll);
     }
 
-    // Connect only while on screen: the lamps keep their last colour after we let go.
-    @Override protected void onStart() { super.onStart(); visible = true; start(); if (pulse) setPulse(true); }
-    @Override protected void onStop()  { super.onStop(); visible = false; disconnectAll(); }
+    // Static colour: connect only while on screen, the lamps keep it. Animation or pulse running: stay connected in the
+    // background behind a foreground-service notification so the phone keeps driving the lamps with the screen off.
+    @Override protected void onStart() {
+        super.onStart();
+        visible = true;
+        stopService(new Intent(this, KeepAliveService.class));
+        start();
+        if (pulse && pulser == null) setPulse(true);
+    }
+
+    @Override protected void onStop() {
+        super.onStop();
+        if (anim != null || pulse || levelup != null) {
+            startForegroundService(new Intent(this, KeepAliveService.class));
+            return;   // visible stays true: reconnects and scans keep working in the background
+        }
+        visible = false;
+        disconnectAll();
+    }
+
+    @Override protected void onDestroy() {
+        super.onDestroy();
+        visible = false;
+        stopService(new Intent(this, KeepAliveService.class));
+        disconnectAll();
+    }
 
     int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
@@ -365,6 +388,7 @@ public class MainActivity extends Activity {
     }
 
     String[] perms() {
+        if (Build.VERSION.SDK_INT >= 33) return new String[]{"android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT", "android.permission.POST_NOTIFICATIONS"};
         return Build.VERSION.SDK_INT >= 31
             ? new String[]{"android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT"}
             : new String[]{"android.permission.ACCESS_FINE_LOCATION"};
@@ -386,7 +410,9 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int code, String[] p, int[] res) {
-        for (int r : res) if (r != PackageManager.PERMISSION_GRANTED) { status.setText("Bluetooth engedély kell"); return; }
+        for (int i = 0; i < res.length; i++) {
+            if (res[i] != PackageManager.PERMISSION_GRANTED && !p[i].endsWith("POST_NOTIFICATIONS")) { status.setText("Bluetooth engedély kell"); return; }
+        }
         start();
     }
 
