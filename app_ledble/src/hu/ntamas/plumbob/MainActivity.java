@@ -319,6 +319,27 @@ public class MainActivity extends Activity {
         upd.setOnClickListener(v -> checkUpdate());
         settings.addView(upd);
 
+        // White balance: RGB strings mix white differently, let the wearer pick the one that looks snow-white on theirs.
+        TextView wl = new TextView(this);
+        wl.setText("Fehér (Fókuszált, fehér villanások)");
+        wl.setTextColor(Color.WHITE);
+        wl.setPadding(0, dp(12), 0, dp(4));
+        settings.addView(wl);
+        GridLayout wGrid = new GridLayout(this);
+        wGrid.setColumnCount(3);
+        String[][] whites = {{"Hófehér", "200,230,255"}, {"Tiszta", "255,255,255"}, {"Meleg", "255,225,180"}};
+        for (String[] w : whites) {
+            Button wb = pill(w[0], "#F4F4F4", 14, dp(48), () -> {
+                names.edit().putString("white", w[1]).apply();
+                loadWhite();
+                if ("white".equals(mood)) applyMood("white");
+                Toast.makeText(this, "Fehér: " + w[0], Toast.LENGTH_SHORT).show();
+            });
+            wGrid.addView(wb);
+        }
+        settings.addView(wGrid);
+        loadWhite();
+
         TextView hint = new TextView(this);
         hint.setText("Hosszú nyomás a lámpa nevén: villan, hogy lásd, melyik az. „Kié?”: név a lámpához, a telefon megjegyzi. Animáció vagy Lüktetés közben az app háttérben is megy (értesítés a sávban), statikus színnél kilépéskor elenged, a lámpa megjegyzi a színt.");
         hint.setTextColor(0xCCFFFFFF);
@@ -555,6 +576,11 @@ public class MainActivity extends Activity {
     };
 
     String label(Bob b) { return b.person == null ? b.name : b.person + "  (" + b.name + ")"; }
+
+    void loadWhite() {
+        String[] p = names.getString("white", "255,255,255").split(",");
+        RGB.put("white", new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2])});
+    }
 
     // Rounded, white-bordered Sims-style button for the 2-column grids.
     Button pill(String text, String color, int textSp, int heightPx, Runnable onClick) {
