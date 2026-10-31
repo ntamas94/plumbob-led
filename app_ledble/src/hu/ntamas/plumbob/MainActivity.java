@@ -55,7 +55,11 @@ public class MainActivity extends Activity {
         {"Szivárvány-hullám", "#FFCC66"}, {"Gyertya", "#FFD27F"}, {"Boszorkány", "#99FF66"}, {"Vámpír", "#AA2222"},
         {"Alien", "#66FFCC"}, {"Simoleon", "#FFD700"}, {"Strobo", "#FFFFFF"}, {"Karácsony", "#FF6666"},
         {"Magyar zászló", "#DDFFDD"}, {"Tévé", "#AACCFF"}, {"Éhező Sim", "#CCDD55"}, {"Kaszás", "#999999"},
+        // From MULTI on: per-lamp frames in wearer order (Dani, Tamás, Bianka, Vivi), see multiFrame().
+        {"Futófény (4 lámpa)", "#FFFFAA"}, {"Pingpong (4 lámpa)", "#AAFFFF"}, {"Hullám (4 lámpa)", "#FFAAFF"},
+        {"Zene (mikrofon)", "#FFEE88"},
     };
+    static final int MULTI = 21, MIC = 24;
     static final Map<String, int[]> RGB = new HashMap<>();
     static {
         RGB.put("green", new int[]{0, 255, 0});   // strongest green the lamp can do (the Sims 4 playeractivecolor 110,199,31 looked washed out)
@@ -101,7 +105,14 @@ public class MainActivity extends Activity {
     Button[] tabs;
     Runnable anim;
     int animStep;
+    int[] base = {0, 255, 0};   // last static colour, used by the chase animations
     final Random rnd = new Random();
+    SeekBar moodBar;
+    Runnable decay;
+    boolean shake = true;
+    long lastShake;
+    volatile boolean micOn;
+    Thread micThread;
     Runnable levelup, pulser;
     boolean pulse;
     long pulseT0;
@@ -212,7 +223,7 @@ public class MainActivity extends Activity {
         blp2.setMargins(dp(16), 0, dp(16), 0);
         bar.setLayoutParams(blp2);
         slideBox.addView(bar);
-        SeekBar moodBar = new SeekBar(this);
+        moodBar = new SeekBar(this);
         moodBar.setMax(100);
         moodBar.setProgress(0);
         moodBar.setProgressTintList(android.content.res.ColorStateList.valueOf(Color.TRANSPARENT));
@@ -226,9 +237,20 @@ public class MainActivity extends Activity {
         slideBox.addView(moodBar);
         pages[0].addView(slideBox);
 
+        Switch decaySw = new Switch(this);   // Sims needs: the scale slides towards red by itself, "Kiváló" feeds the Sim
+        decaySw.setText("Lecsengés (10 perc alatt zöld → piros)  ");
+        decaySw.setTextColor(Color.WHITE);
+        decaySw.setPadding(0, dp(4), 0, dp(4));
+        decaySw.setOnCheckedChangeListener((sw, on) -> setDecay(on));
+        pages[0].addView(decaySw);
+
         GridLayout grid = new GridLayout(this);
         grid.setColumnCount(2);
-        for (String[] m : MOODS) grid.addView(pill(m[0], m[2], 20, dp(72), () -> { if ("levelup".equals(m[1])) levelUp(); else applyMood(m[1]); }));
+        for (String[] m : MOODS) grid.addView(pill(m[0], m[2], 20, dp(72), () -> {
+            if ("levelup".equals(m[1])) levelUp(); else applyMood(m[1]);
+            int pos = "green".equals(m[1]) ? 0 : "yellow".equals(m[1]) ? 33 : "orange".equals(m[1]) ? 66 : "red".equals(m[1]) ? 100 : -1;
+            if (pos >= 0) moodBar.setProgress(pos);   // keep the scale (and the decay) in step with the classic moods
+        }));
         pages[0].addView(grid);
 
         // Page 1: the lamp's built-in effects + their speed.
@@ -340,6 +362,14 @@ public class MainActivity extends Activity {
         settings.addView(wGrid);
         loadWhite();
 
+        Switch shakeSw = new Switch(this);
+        shakeSw.setText("Rázásra véletlen hangulat  ");
+        shakeSw.setTextColor(Color.WHITE);
+        shakeSw.setChecked(shake);
+        shakeSw.setPadding(0, dp(10), 0, 0);
+        shakeSw.setOnCheckedChangeListener((sw, on) -> shake = on);
+        settings.addView(shakeSw);
+
         TextView hint = new TextView(this);
         hint.setText("Hosszú nyomás a lámpa nevén: villan, hogy lásd, melyik az. „Kié?”: név a lámpához, a telefon megjegyzi. Animáció vagy Lüktetés közben az app háttérben is megy (értesítés a sávban), statikus színnél kilépéskor elenged, a lámpa megjegyzi a színt.");
         hint.setTextColor(0xCCFFFFFF);
@@ -390,6 +420,88 @@ public class MainActivity extends Activity {
         disconnectAll();
     }
 
+    // Shake detection only while on screen.
+    @Override protected void onResume() {
+        super.onResume();
+        android.hardware.SensorManager sm = (android.hardware.SensorManager) getSystemService(SENSOR_SERVICE);
+        android.hardware.Sensor acc = sm.getDefaultSensor(android.hardware.Sensor.TYPE_ACCELEROMETER);
+        if (acc != null) sm.registerListener(shakeCb, acc, android.hardware.SensorManager.SENSOR_DELAY_GAME);
+    }
+
+    @Override protected void onPause() {
+        super.onPause();
+        ((android.hardware.SensorManager) getSystemService(SENSOR_SERVICE)).unregisterListener(shakeCb);
+    }
+
+    final android.hardware.SensorEventListener shakeCb = new android.hardware.SensorEventListener() {
+        public void onSensorChanged(android.hardware.SensorEvent e) {
+            if (!shake) return;
+            double g = Math.sqrt(e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]) / 9.81;
+            long now = System.currentTimeMillis();
+            if (g > 2.4 && now - lastShake > 1200) {   // a real shake, not a pocket wobble; one mood per shake
+                lastShake = now;
+                String[] moods = {"green", "yellow", "orange", "red", "pink", "white", "turquoise"};
+                String pick = moods[rnd.nextInt(moods.length)];
+                applyMood(pick);
+                Toast.makeText(MainActivity.this, "Rázás: " + pick, Toast.LENGTH_SHORT).show();
+            }
+        }
+        public void onAccuracyChanged(android.hardware.Sensor s, int a) { }
+    };
+
+    // Needs decay: every 30 s the scale moves 5 % towards red (10 min from green to red), then stays red.
+    void setDecay(boolean on) {
+        if (decay != null) { ui.removeCallbacks(decay); decay = null; }
+        if (!on) return;
+        decay = new Runnable() {
+            public void run() {
+                int pos = Math.min(100, moodBar.getProgress() + 5);
+                moodBar.setProgress(pos);
+                if (anim == null && levelup == null) { slideStart(); slideMood(pos, true); }
+                ui.postDelayed(this, 30000);
+            }
+        };
+        ui.postDelayed(decay, 30000);
+    }
+
+    // Microphone-reactive: the base colour scaled by the loudness of what the phone hears, ~10 frames a second.
+    void startMic() {
+        if (checkSelfPermission("android.permission.RECORD_AUDIO") != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.RECORD_AUDIO"}, 3);
+            return;
+        }
+        micOn = true;
+        micThread = new Thread(() -> {
+            int rate = 16000, n = 1600;
+            android.media.AudioRecord rec = null;
+            try {
+                rec = new android.media.AudioRecord(android.media.MediaRecorder.AudioSource.MIC, rate,
+                    android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, Math.max(n * 2, android.media.AudioRecord.getMinBufferSize(rate, 16, 2)));
+                rec.startRecording();
+                short[] buf = new short[n];
+                double peak = 500;
+                while (micOn) {
+                    int got = rec.read(buf, 0, n);
+                    if (got <= 0) continue;
+                    double sum = 0;
+                    for (int i = 0; i < got; i++) sum += (double) buf[i] * buf[i];
+                    double rms = Math.sqrt(sum / got);
+                    peak = Math.max(rms, peak * 0.97);              // adaptive ceiling: quiet rooms still move
+                    double level = Math.max(0.06, Math.min(1.0, rms / Math.max(peak, 300)));
+                    int[] c = {(int) (base[0] * level), (int) (base[1] * level), (int) (base[2] * level)};
+                    ui.post(() -> { for (Bob b : selected()) if (b.queue.size() < 2) { b.cur = c; enqueue(b, Proto.rgb(b.fam, c[0], c[1], c[2])); } });
+                }
+            } catch (Exception e) {
+                ui.post(() -> Toast.makeText(this, "Mikrofon hiba: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            } finally {
+                if (rec != null) { try { rec.stop(); } catch (Exception ignored) { } rec.release(); }
+            }
+        });
+        micThread.start();
+    }
+
+    void stopMic() { micOn = false; micThread = null; }
+
     int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
     List<Bob> selected() {
@@ -430,6 +542,7 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int code, String[] p, int[] res) {
+        if (code == 3) { if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) startMic(); else Toast.makeText(this, "Mikrofon engedély kell a Zene animációhoz", Toast.LENGTH_LONG).show(); return; }
         for (int i = 0; i < res.length; i++) {
             if (res[i] != PackageManager.PERMISSION_GRANTED && !p[i].endsWith("POST_NOTIFICATIONS")) { status.setText("Bluetooth engedély kell"); return; }
         }
@@ -760,6 +873,7 @@ public class MainActivity extends Activity {
         if (!fin && now - lastSlide < 120) return;
         lastSlide = now;
         int[] c = plumbobColor(pct / 100f);
+        base = c;
         mood = "rgb:" + c[0] + "," + c[1] + "," + c[2];
         for (Bob b : selected()) {
             b.fadeId++;
@@ -768,7 +882,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    void stopAnim() { if (anim != null) { ui.removeCallbacks(anim); anim = null; } }
+    void stopAnim() { if (anim != null) { ui.removeCallbacks(anim); anim = null; } stopMic(); }
 
     // One animation at a time; each tick sends one colour frame to every selected lamp (skipped if its queue is backed up).
     void startAnim(int idx) {
@@ -777,14 +891,58 @@ public class MainActivity extends Activity {
         mood = "anim:" + idx;
         for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
         animStep = 0;
+        if (idx == MIC) {
+            anim = () -> { };   // marker so onStop keeps the connections alive; the mic thread does the work
+            startMic();
+            return;
+        }
         anim = new Runnable() {
             public void run() {
-                int[] f = animFrame(idx, animStep++);   // {r, g, b, wait ms}
-                for (Bob b : selected()) if (b.queue.size() < 3) { b.cur = new int[]{f[0], f[1], f[2]}; enqueue(b, Proto.rgb(b.fam, f[0], f[1], f[2])); }
-                ui.postDelayed(this, f[3]);
+                List<Bob> sel = ordered();
+                int total = Math.max(1, sel.size());
+                int[] shared = idx < MULTI ? animFrame(idx, animStep) : null;   // {r, g, b, wait ms}, same for every lamp
+                int wait = shared != null ? shared[3] : 150;
+                for (int k = 0; k < sel.size(); k++) {
+                    Bob b = sel.get(k);
+                    int[] f = shared != null ? shared : multiFrame(idx, animStep, k, total);
+                    wait = f[3];
+                    if (b.queue.size() < 3) { b.cur = new int[]{f[0], f[1], f[2]}; enqueue(b, Proto.rgb(b.fam, f[0], f[1], f[2])); }
+                }
+                animStep++;
+                ui.postDelayed(this, wait);
             }
         };
         anim.run();
+    }
+
+    /** Selected lamps in wearer order (PEOPLE), unnamed ones last in discovery order. */
+    List<Bob> ordered() {
+        List<Bob> r = selected();
+        r.sort((x, y) -> Integer.compare(rank(x), rank(y)));
+        return r;
+    }
+
+    int rank(Bob b) {
+        int i = b.person == null ? -1 : Arrays.asList(PEOPLE).indexOf(b.person);
+        return i < 0 ? 99 : i;
+    }
+
+    /** Frame for lamp k of total in a multi-lamp animation. */
+    int[] multiFrame(int idx, int n, int k, int total) {
+        switch (idx) {
+            case MULTI: {       // Futófény: one lamp lit in the base colour, the rest dim, running round
+                int lit = n % total;
+                return k == lit ? new int[]{base[0], base[1], base[2], 300} : new int[]{base[0] / 12, base[1] / 12, base[2] / 12, 300};
+            }
+            case MULTI + 1: {   // Pingpong: same, bouncing back and forth
+                int span = Math.max(1, 2 * total - 2);
+                int p = n % span;
+                int lit = p < total ? p : span - p;
+                return k == lit ? new int[]{base[0], base[1], base[2], 250} : new int[]{base[0] / 12, base[1] / 12, base[2] / 12, 250};
+            }
+            default:            // Hullám: rainbow, each lamp a quarter turn behind the previous one
+                return hsv((n * 8 + k * (360 / total)) % 360, 120);
+        }
     }
 
     /** Colour and hold time of animation step n. */
@@ -897,6 +1055,7 @@ public class MainActivity extends Activity {
 
     void applyMood(String m) {
         mood = m;
+        if (RGB.containsKey(m)) base = RGB.get(m);
         stopAnim();
         if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
         List<Bob> sel = selected();
