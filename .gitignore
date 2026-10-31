@@ -1,0 +1,8 @@
+*.apk
+*.apk.idsig
+*.zip
+*.stl
+*.svg
+build/
+tarto/
+*.rar

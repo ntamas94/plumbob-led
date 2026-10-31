@@ -1,0 +1,10 @@
+Plumbob LED - telepites (Android)
+
+1. Csomagold ki a zip-et, a PlumbobLED.apk-t nyisd meg (Fajlok app).
+2. Ha kerdezi: "Ismeretlen forrasbol telepites" engedelyezese ehhez az apphoz.
+3. Telepites utan: Bluetooth be, a gyari LED LAMP app legyen bezarva (Kenyszeritett leallitas), lampa be.
+4. App indit -> Bluetooth engedely -> 10 mp kereses -> "1/1 lampa csatlakozva".
+5. Fogaskerek (jobb felul) -> "Kie?" -> sajat nev. Hosszu nyomas a lampa neven: villan, igy latod, melyik a tied.
+6. Fo kepernyo: "Kinek" legordulo (ha csak a sajat lampad van, maradhat Mindenkinek), hangulat-gombok, effekt, fenyero, Luktetes.
+
+Egyszerre csak egy telefon tud egy lampahoz csatlakozni.
