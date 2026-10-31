@@ -46,7 +46,10 @@ final class Frames {
                 return n % 2 == 0 ? frame(255, 40, 120, 300) : frame(255, 0, 60, 300);
             case 8: return n % 2 == 0 ? frame(0, 80, 0, 800) : frame(50, 140, 0, 800);                  // Zombi
             case 9: return hsv((n * 6) % 360, 100);                                                     // Szivárvány-hullám
-            case 10: return frame(255, 45 + rnd.nextInt(35), rnd.nextInt(6), 120 + rnd.nextInt(160));   // Gyertya: amber, not yellow-green
+            case 10: {  // Gyertya: slow amber breathing with a little flicker; green stays low, this string's green LED is strong
+                int g = 40 + (int) (12 * Math.sin(n / 2.5)) + rnd.nextInt(8);
+                return frame(230 + rnd.nextInt(26), g, 0, 300 + rnd.nextInt(250));
+            }
             case 11: return n % 2 == 0 ? frame(140, 0, 220, 600) : frame(60, 255, 0, 600);              // Boszorkány
             case 12: return breathing(255, 0, 0, 0.15, n / 8.0, 100);                                   // Vámpír
             case 13:                                                                                    // Alien
