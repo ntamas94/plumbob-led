@@ -86,6 +86,7 @@ public class MainActivity extends Activity {
         byte[] inFlight;
         int[] cur = {0, 0, 0};   // last colour sent, fades start from here
         int fadeId;              // bumping it cancels a running fade
+        int hp = 100;            // life points of this lamp's wearer
     }
 
     BluetoothAdapter adapter;
@@ -108,7 +109,7 @@ public class MainActivity extends Activity {
     Runnable anim;
     int animStep, animWait;
     int epoch;   // bumped on every mood/animation switch; delayed lambdas from the previous one check it and bail
-    int hp = 100, hpMax = 100;
+    int hpMax = 100;
     TextView hpView;
     final ArrayDeque<Integer> seenAttacks = new ArrayDeque<>(), seenAcks = new ArrayDeque<>();
     int[] base = {0, 255, 0};   // last static colour, used by the chase animations
@@ -342,24 +343,30 @@ public class MainActivity extends Activity {
         pages[3].addView(hpView);
         GridLayout hpGrid = new GridLayout(this);
         hpGrid.setColumnCount(2);
-        hpGrid.addView(pill("−1", "#FF7766", 24, dp(72), () -> setHp(hp - 1)));
-        hpGrid.addView(pill("+1", "#77EE77", 24, dp(72), () -> setHp(hp + 1)));
-        hpGrid.addView(pill("−5", "#EE4444", 20, dp(56), () -> setHp(hp - 5)));
-        hpGrid.addView(pill("+5", "#44CC44", 20, dp(56), () -> setHp(hp + 5)));
-        hpGrid.addView(pill("−10", "#CC2222", 20, dp(56), () -> setHp(hp - 10)));
-        hpGrid.addView(pill("+10", "#22AA22", 20, dp(56), () -> setHp(hp + 10)));
-        hpGrid.addView(pill("Halott (0)", "#999999", 16, dp(56), () -> setHp(0)));
-        hpGrid.addView(pill("Teli", "#BBDDFF", 16, dp(56), () -> setHp(hpMax)));
+        hpGrid.addView(pill("−1", "#FF7766", 24, dp(72), () -> addHp(-1)));
+        hpGrid.addView(pill("+1", "#77EE77", 24, dp(72), () -> addHp(1)));
+        hpGrid.addView(pill("−5", "#EE4444", 20, dp(56), () -> addHp(-5)));
+        hpGrid.addView(pill("+5", "#44CC44", 20, dp(56), () -> addHp(5)));
+        hpGrid.addView(pill("−10", "#CC2222", 20, dp(56), () -> addHp(-10)));
+        hpGrid.addView(pill("+10", "#22AA22", 20, dp(56), () -> addHp(10)));
+        hpGrid.addView(pill("Halott (0)", "#999999", 16, dp(56), () -> addHp(-100000)));
+        hpGrid.addView(pill("Teli", "#BBDDFF", 16, dp(56), () -> addHp(100000)));
         pages[3].addView(hpGrid);
         TextView maxL = new TextView(this);
-        maxL.setText("Maximum");
+        maxL.setText("Maximum (mindenkinek, és feltölt)");
         maxL.setTextColor(Color.WHITE);
         maxL.setPadding(0, dp(8), 0, 0);
         pages[3].addView(maxL);
         GridLayout maxGrid = new GridLayout(this);
         maxGrid.setColumnCount(5);
-        for (int m : new int[]{10, 20, 30, 50, 100}) maxGrid.addView(pill("" + m, "#DDDDDD", 14, dp(44), () -> { hpMax = m; setHp(m); }));
+        for (int m : new int[]{10, 20, 30, 50, 100}) maxGrid.addView(pill("" + m, "#DDDDDD", 14, dp(44), () -> { hpMax = m; for (Bob x : bobs.values()) x.hp = m; showHp(true); }));
         pages[3].addView(maxGrid);
+        TextView hpHint = new TextView(this);
+        hpHint.setText("A gombok a „Kinek” szerint kiválasztott lámpá(k)ra hatnak. Életerő lámpánként (személyenként) számolódik.");
+        hpHint.setTextColor(0xCCFFFFFF);
+        hpHint.setTextSize(13);
+        hpHint.setPadding(0, dp(6), 0, 0);
+        pages[3].addView(hpHint);
         TextView atkL = new TextView(this);
         atkL.setText("Támadás (−1 HP a másik telefonján, Bluetooth-on)");
         atkL.setTextColor(Color.WHITE);
@@ -369,7 +376,7 @@ public class MainActivity extends Activity {
         atkGrid.setColumnCount(4);
         for (int i = 0; i < PEOPLE.length; i++) { final int t = i; atkGrid.addView(pill(PEOPLE[i], "#FFAA55", 14, dp(48), () -> sendAttack(t))); }
         pages[3].addView(atkGrid);
-        setHp(hpMax, false);
+        showHp(false);
 
         // Page 4: settings – which lamp belongs to whom, rescan, update, diagnostics.
         settings = pages[4];
@@ -388,6 +395,12 @@ public class MainActivity extends Activity {
         rescan.setAllCaps(false);
         rescan.setOnClickListener(v -> scan());
         settings.addView(rescan);
+
+        Button unIgnore = new Button(this);
+        unIgnore.setText("Elengedettek vissza");
+        unIgnore.setAllCaps(false);
+        unIgnore.setOnClickListener(v -> { names.edit().remove("ignore").apply(); scan(); Toast.makeText(this, "Minden lámpa újra felvehető", Toast.LENGTH_SHORT).show(); });
+        settings.addView(unIgnore);
 
         Button upd = new Button(this);
         upd.setText("Frissítés keresése (v" + versionCode() + ")");
@@ -685,7 +698,7 @@ public class MainActivity extends Activity {
                     seenAttacks.add(nonce);
                     while (seenAttacks.size() > 32) seenAttacks.poll();
                     showPage(3);
-                    hit(from);
+                    for (Bob b : bobs.values()) if (b.ch != null && PEOPLE[idx].equals(b.person)) hit(b, from);
                     advertise(4, idx, nonce, 6000, ackAdvCb);   // tell the attacker it landed
                 });
                 return;
@@ -789,7 +802,7 @@ public class MainActivity extends Activity {
                 if (n == null) n = d.getName();   // cached/bonded name as fallback
                 seen.add(n == null ? "(névtelen " + d.getAddress().substring(12) + ")" : n);
                 seenView.setText("Látott: " + seen);
-                if (n == null || !n.toUpperCase().startsWith("LED") || !visible || bobs.containsKey(d.getAddress())) return;
+                if (n == null || !n.toUpperCase().startsWith("LED") || !visible || bobs.containsKey(d.getAddress()) || ignored(d.getAddress())) return;
                 Bob b = new Bob();
                 b.name = n;
                 b.dev = d;
@@ -865,6 +878,7 @@ public class MainActivity extends Activity {
                 if (b.lbl == null) addRow(b);
                 b.lbl.setTextColor(Color.WHITE);
                 refreshStatus();
+                showHp(false);
                 connectNext();
                 // Same handshake the official app does 300 ms after connecting, then bring the lamp to the current mood.
                 ui.postDelayed(() -> {
@@ -1012,9 +1026,34 @@ public class MainActivity extends Activity {
             }).show();
         });
         b.row.addView(whoBtn);
+        Button drop = new Button(this);   // "everyone drives one lamp": hand this lamp over to another phone
+        drop.setText("Elenged");
+        drop.setAllCaps(false);
+        drop.setOnClickListener(v -> release(b));
+        b.row.addView(drop);
         list.addView(b.row);
         rebuildWho();
     }
+
+    /** Disconnect the lamp and ignore it on this phone until "Elengedettek vissza"; another phone can take it. */
+    @SuppressWarnings("MissingPermission")
+    void release(Bob b) {
+        java.util.Set<String> ign = new java.util.HashSet<>(names.getStringSet("ignore", new java.util.HashSet<>()));
+        ign.add(b.dev.getAddress());
+        names.edit().putStringSet("ignore", ign).apply();
+        if (b.gatt != null) b.gatt.close();
+        bobs.remove(b.dev.getAddress());
+        toConnect.remove(b);
+        if (connecting == b) connecting = null;
+        if (b.row != null) list.removeView(b.row);
+        rebuildWho();
+        refreshStatus();
+        showHp(false);
+        Toast.makeText(this, label(b) + " elengedve, másik telefon felveheti", Toast.LENGTH_SHORT).show();
+        connectNext();
+    }
+
+    boolean ignored(String mac) { return names.getStringSet("ignore", new java.util.HashSet<>()).contains(mac); }
 
     // One write in flight per lamp; the next frame goes out when the lamp has acknowledged the previous one.
     void enqueue(Bob b, byte[] frame) {
@@ -1048,40 +1087,46 @@ public class MainActivity extends Activity {
         else if (m.startsWith("fx:")) { enqueue(b, Proto.mode(b.fam, Integer.parseInt(m.substring(3)))); enqueue(b, Proto.speed(b.fam, speed)); }
         else if (m.startsWith("anim:")) { /* the running animation feeds the colours */ }
         else if (m.startsWith("rgb:")) { String[] p = m.substring(4).split(","); fadeTo(b, new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2])}); }
-        else if ("hp".equals(m)) fadeTo(b, hpColor());
+        else if ("hp".equals(m)) { if (b.hp <= 0) enqueue(b, Proto.mode(b.fam, 150)); else fadeTo(b, hpColor(b)); }   // 150 = red flash: dead
         else fadeTo(b, RGB.get(m));
     }
 
-    // ---- Life points ----
-    int[] hpColor() { return hp <= 0 ? new int[]{255, 0, 0} : plumbobColor(1f - (hp - 1f) / Math.max(1, hpMax - 1)); }
+    // ---- Life points, one counter per lamp (= per wearer) ----
+    int[] hpColor(Bob b) { return b.hp <= 0 ? new int[]{255, 0, 0} : plumbobColor(1f - (b.hp - 1f) / Math.max(1, hpMax - 1)); }
 
-    void setHp(int v) { setHp(v, true); }
-
-    void setHp(int v, boolean show) {
-        hp = Math.max(0, Math.min(hpMax, v));
-        hpView.setText("Életerő: " + hp + " / " + hpMax);
-        if (!show) return;
-        if (hp == 0) startAnim(20);   // Kaszás
-        else { base = hpColor(); applyMood("hp"); }
+    /** Text like "Tamás 87/100   Bianka 92/100" for the lamps the "Kinek" choice covers. */
+    void showHp(boolean apply) {
+        StringBuilder s = new StringBuilder();
+        for (Bob b : ordered()) s.append(s.length() > 0 ? "   " : "").append(b.person == null ? b.name : b.person).append(' ').append(b.hp).append('/').append(hpMax);
+        hpView.setText(s.length() == 0 ? "Életerő: nincs csatlakozott lámpa" : s.toString());
+        if (apply) applyMood("hp");
     }
 
-    /** A white flash, then back to the HP colour: someone hit us. */
-    void hit(String from) {
-        setHp(hp - 1, false);
-        Toast.makeText(this, from + " megtámadott! −1 HP", Toast.LENGTH_SHORT).show();
-        if (hp == 0) { startAnim(20); return; }
-        fresh();
-        final int ep = epoch;
+    void addHp(int d) {
+        for (Bob b : selected()) b.hp = Math.max(0, Math.min(hpMax, b.hp + d));
+        showHp(true);
+    }
+
+    /** One lamp takes a hit: white flash, then its HP colour (or the dead red flash). */
+    void hit(Bob b, String from) {
+        b.hp = Math.max(0, b.hp - 1);
+        Toast.makeText(this, from + " megtámadta: " + (b.person == null ? b.name : b.person) + " (−1)", Toast.LENGTH_SHORT).show();
         mood = "hp";
-        base = hpColor();
-        for (Bob b : selected()) { enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); enqueue(b, Proto.rgb(b.fam, 255, 255, 255)); }
-        ui.postDelayed(() -> { if (ep != epoch) return; for (Bob b : selected()) { b.cur = new int[]{255, 255, 255}; fadeTo(b, hpColor()); } }, 200);
+        b.fadeId++;
+        b.queue.clear();
+        final int ep = ++epoch;
+        if (anim != null) stopAnim();
+        enqueue(b, Proto.on(b.fam));
+        if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness));
+        enqueue(b, Proto.rgb(b.fam, 255, 255, 255));
+        ui.postDelayed(() -> { if (ep != epoch || b.ch == null) return; b.cur = new int[]{255, 255, 255}; moodFrames(b, "hp"); }, 200);
+        showHp(false);
     }
 
     void sendAttack(int target) {
         int nonce = rnd.nextInt(65536);
         seenAttacks.add(nonce);
-        if ((myMask() & (1 << target)) != 0) { hit(myName()); }   // hitting someone on this phone (or yourself)
+        for (Bob b : bobs.values()) if (b.ch != null && PEOPLE[target].equals(b.person)) hit(b, myName());   // target's lamp is on this phone
         if (advertise(3, target, nonce, 10000, attackAdvCb)) Toast.makeText(this, "Támadás: " + PEOPLE[target] + "…", Toast.LENGTH_SHORT).show();
     }
 
