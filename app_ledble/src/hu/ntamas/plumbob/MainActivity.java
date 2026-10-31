@@ -58,9 +58,10 @@ public class MainActivity extends Activity {
         // From MULTI on: per-lamp frames in wearer order (Dani, Tamás, Bianka, Vivi), see multiFrame(). With the lamps
         // spread over several phones the step comes from the wall clock, so everyone pressing the same button stays in sync.
         {"Futófény (csoport)", "#FFFFAA"}, {"Pingpong (csoport)", "#AAFFFF"}, {"Hullám (csoport)", "#FFAAFF"},
+        {"Forró krumpli (játék)", "#FFB347"}, {"Szerencsekerék (játék)", "#FFD700"}, {"Tűzijáték (csoport)", "#FF99CC"},
         {"Zene (mikrofon)", "#FFEE88"},
     };
-    static final int MULTI = 21, MIC = 24;
+    static final int MULTI = 21, MIC = 27;
     static final Map<String, int[]> RGB = new HashMap<>();
     static {
         RGB.put("green", new int[]{0, 255, 0});   // strongest green the lamp can do (the Sims 4 playeractivecolor 110,199,31 looked washed out)
@@ -105,7 +106,10 @@ public class MainActivity extends Activity {
     LinearLayout[] pages;
     Button[] tabs;
     Runnable anim;
-    int animStep;
+    int animStep, animWait;
+    int hp = 20, hpMax = 20;
+    TextView hpView;
+    final ArrayDeque<Integer> seenAttacks = new ArrayDeque<>();
     int[] base = {0, 255, 0};   // last static colour, used by the chase animations
     final Random rnd = new Random();
     SeekBar moodBar;
@@ -184,7 +188,7 @@ public class MainActivity extends Activity {
         LinearLayout tabBar = new LinearLayout(this);
         tabBar.setOrientation(LinearLayout.HORIZONTAL);
         tabBar.setPadding(0, dp(8), 0, dp(4));
-        String[] tabNames = {"Hangulat", "Effekt", "Animáció", "Beállítások"};
+        String[] tabNames = {"Hangulat", "Effekt", "Anim", "Életerő", "Beáll."};
         pages = new LinearLayout[tabNames.length];
         tabs = new Button[tabNames.length];
         for (int i = 0; i < tabNames.length; i++) {
@@ -326,8 +330,46 @@ public class MainActivity extends Activity {
         });
         root.addView(bright);
 
-        // Page 3: settings – which lamp belongs to whom, rescan, update, diagnostics.
-        settings = pages[3];
+        // Page 3: life points for board-game nights. The lamp shows HP as plumbob colour; attacks arrive over Bluetooth.
+        hpView = new TextView(this);
+        hpView.setTextSize(40);
+        hpView.setTextColor(Color.WHITE);
+        hpView.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        hpView.setGravity(Gravity.CENTER);
+        hpView.setShadowLayer(6f, 0f, 3f, 0x99000000);
+        hpView.setPadding(0, dp(8), 0, dp(4));
+        pages[3].addView(hpView);
+        GridLayout hpGrid = new GridLayout(this);
+        hpGrid.setColumnCount(2);
+        hpGrid.addView(pill("−1", "#FF7766", 24, dp(72), () -> setHp(hp - 1)));
+        hpGrid.addView(pill("+1", "#77EE77", 24, dp(72), () -> setHp(hp + 1)));
+        hpGrid.addView(pill("−5", "#EE4444", 20, dp(56), () -> setHp(hp - 5)));
+        hpGrid.addView(pill("+5", "#44CC44", 20, dp(56), () -> setHp(hp + 5)));
+        hpGrid.addView(pill("Halott (0)", "#999999", 16, dp(56), () -> setHp(0)));
+        hpGrid.addView(pill("Teli", "#BBDDFF", 16, dp(56), () -> setHp(hpMax)));
+        pages[3].addView(hpGrid);
+        TextView maxL = new TextView(this);
+        maxL.setText("Maximum");
+        maxL.setTextColor(Color.WHITE);
+        maxL.setPadding(0, dp(8), 0, 0);
+        pages[3].addView(maxL);
+        GridLayout maxGrid = new GridLayout(this);
+        maxGrid.setColumnCount(4);
+        for (int m : new int[]{10, 20, 30, 50}) maxGrid.addView(pill("" + m, "#DDDDDD", 15, dp(44), () -> { hpMax = m; setHp(m); }));
+        pages[3].addView(maxGrid);
+        TextView atkL = new TextView(this);
+        atkL.setText("Támadás (−1 HP a másik telefonján, Bluetooth-on)");
+        atkL.setTextColor(Color.WHITE);
+        atkL.setPadding(0, dp(10), 0, 0);
+        pages[3].addView(atkL);
+        GridLayout atkGrid = new GridLayout(this);
+        atkGrid.setColumnCount(4);
+        for (int i = 0; i < PEOPLE.length; i++) { final int t = i; atkGrid.addView(pill(PEOPLE[i], "#FFAA55", 14, dp(48), () -> sendAttack(t))); }
+        pages[3].addView(atkGrid);
+        setHp(hpMax, false);
+
+        // Page 4: settings – which lamp belongs to whom, rescan, update, diagnostics.
+        settings = pages[4];
         settings.setPadding(0, dp(8), 0, 0);
         TextView sTitle = new TextView(this);
         sTitle.setText("Lámpák – kié melyik?");
@@ -611,10 +653,20 @@ public class MainActivity extends Activity {
         public void onScanResult(int type, ScanResult r) {
             if (r.getScanRecord() == null) return;
             byte[] p = r.getScanRecord().getManufacturerSpecificData(COMPANY);
-            if (p == null || p.length < 5 || (p[0] != 1 && p[0] != 2)) return;
+            if (p == null || p.length < 5 || p[0] < 1 || p[0] > 3) return;
             int kind = p[0], idx = p[1] & 0xFF, nonce = ((p[2] & 0xFF) << 8) | (p[3] & 0xFF), mask = p[4] & 0xFF;
-            if (idx >= ANIMS.length) return;
             String from = new String(p, 5, p.length - 5, java.nio.charset.StandardCharsets.UTF_8);
+            if (kind == 3) {   // attack on PEOPLE[idx]: applies on the phone that owns that lamp, once per nonce
+                runOnUiThread(() -> {
+                    if (seenAttacks.contains(nonce) || idx >= PEOPLE.length || (myMask() & (1 << idx)) == 0) return;
+                    seenAttacks.add(nonce);
+                    while (seenAttacks.size() > 32) seenAttacks.poll();
+                    showPage(3);
+                    hit(from);
+                });
+                return;
+            }
+            if (idx >= ANIMS.length) return;
             runOnUiThread(() -> {
                 if (groupMode && nonce == curNonce) {   // our session: anyone's beacon grows the roster on every phone
                     if ((roster | mask) != roster) { roster |= mask; Toast.makeText(MainActivity.this, from + " benne van", Toast.LENGTH_SHORT).show(); }
@@ -960,8 +1012,44 @@ public class MainActivity extends Activity {
         else if (m.startsWith("fx:")) { enqueue(b, Proto.mode(b.fam, Integer.parseInt(m.substring(3)))); enqueue(b, Proto.speed(b.fam, speed)); }
         else if (m.startsWith("anim:")) { /* the running animation feeds the colours */ }
         else if (m.startsWith("rgb:")) { String[] p = m.substring(4).split(","); fadeTo(b, new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2])}); }
+        else if ("hp".equals(m)) fadeTo(b, hpColor());
         else fadeTo(b, RGB.get(m));
     }
+
+    // ---- Life points ----
+    int[] hpColor() { return hp <= 0 ? new int[]{255, 0, 0} : plumbobColor(1f - (hp - 1f) / Math.max(1, hpMax - 1)); }
+
+    void setHp(int v) { setHp(v, true); }
+
+    void setHp(int v, boolean show) {
+        hp = Math.max(0, Math.min(hpMax, v));
+        hpView.setText("Életerő: " + hp + " / " + hpMax);
+        if (!show) return;
+        if (hp == 0) startAnim(20);   // Kaszás
+        else { base = hpColor(); applyMood("hp"); }
+    }
+
+    /** A white flash, then back to the HP colour: someone hit us. */
+    void hit(String from) {
+        setHp(hp - 1, false);
+        Toast.makeText(this, from + " megtámadott! −1 HP", Toast.LENGTH_SHORT).show();
+        if (hp == 0) { startAnim(20); return; }
+        stopAnim();
+        if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
+        mood = "hp";
+        base = hpColor();
+        for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); enqueue(b, Proto.rgb(b.fam, 255, 255, 255)); }
+        ui.postDelayed(() -> { for (Bob b : selected()) { b.cur = new int[]{255, 255, 255}; fadeTo(b, hpColor()); } }, 200);
+    }
+
+    void sendAttack(int target) {
+        int nonce = rnd.nextInt(65536);
+        seenAttacks.add(nonce);
+        if ((myMask() & (1 << target)) != 0) { hit(myName()); }   // hitting someone on this phone (or yourself)
+        if (advertise(3, target, nonce, 4000, attackAdvCb)) Toast.makeText(this, "Támadás: " + PEOPLE[target], Toast.LENGTH_SHORT).show();
+    }
+
+    final AdvertiseCallback attackAdvCb = new AdvertiseCallback() { };
 
     /** Colour at position t (0 = happy green, 1 = critical red) of the plumbob scale. */
     static int[] plumbobColor(float t) {
@@ -1002,10 +1090,12 @@ public class MainActivity extends Activity {
     void startAnim(int idx) {
         stopAnim();
         groupMode = false;   // a plain tap runs the chase over this phone's own lamps; invitations switch group mode on
+        curNonce = 0;        // games use it as their random seed; a group session sets it from the invitation
         if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
         mood = "anim:" + idx;
         for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
         animStep = 0;
+        animWait = idx < MULTI ? animFrame(idx, 0)[3] : 0;   // fixed-period animations can be clock-synced in a group
         if (idx == MIC) {
             anim = () -> { };   // marker so onStop keeps the connections alive; the mic thread does the work
             startMic();
@@ -1015,7 +1105,9 @@ public class MainActivity extends Activity {
             public void run() {
                 List<Bob> sel = ordered();
                 int total = Math.max(1, sel.size());
-                int[] shared = idx < MULTI ? animFrame(idx, animStep) : null;   // {r, g, b, wait ms}, same for every lamp
+                // Shared animations: in a group session the step comes from the clock so phones flash together.
+                int sharedStep = groupMode && animWait > 0 ? (int) ((System.currentTimeMillis() / animWait) % 1000000) : animStep;
+                int[] shared = idx < MULTI ? animFrame(idx, sharedStep) : null;   // {r, g, b, wait ms}, same for every lamp
                 int wait = shared != null ? shared[3] : multiFrame(idx, 0, 0, 1)[3];
                 // Group mode (after an invitation): named lamps take their wearer's slot of 4 and the clock's step,
                 // so several phones run one chase; slots of people who are not in stay dark.
@@ -1033,7 +1125,7 @@ public class MainActivity extends Activity {
                 }
                 animStep++;
                 // Group mode: wake exactly at the next clock boundary so phones tick together.
-                ui.postDelayed(this, group ? wait - (System.currentTimeMillis() % wait) : wait);
+                ui.postDelayed(this, groupMode ? wait - (System.currentTimeMillis() % wait) : wait);
             }
         };
         anim.run();
@@ -1070,9 +1162,54 @@ public class MainActivity extends Activity {
                 int lit = p < total ? p : span - p;
                 return k == lit ? new int[]{base[0], base[1], base[2], 250} : new int[]{base[0] / 12, base[1] / 12, base[2] / 12, 250};
             }
-            default:            // Hullám: rainbow, each lamp a quarter turn behind the previous one
+            case MULTI + 2:     // Hullám: rainbow, each lamp a share of the turn behind the previous one
                 return hsv((n * 8 + k * (360 / total)) % 360, 120);
+            case MULTI + 3: {   // Forró krumpli: 250 ms hops to random players, round of 10..21 hops, loser flashes red for 12 ticks
+                int step = n, round = 0;
+                while (true) { int len = 10 + seeded(round, 0) % 12; if (step < len + 12) return potato(step, len, round, k, total); step -= len + 12; round++; }
+            }
+            case MULTI + 4: {   // Szerencsekerék: 100 ms ticks, 6 s decelerating spin + 3 s hold on the winner
+                int per = 90, t = n % per, round = n / per;
+                float turns = 3 + (seeded(round, 1) % 300) / 100f;              // 3.00 .. 5.99 turns, the fraction picks the winner
+                float u = Math.min(1f, t / 60f);
+                int lit = (int) Math.floor(turns * (1 - (1 - u) * (1 - u)) * total) % total;
+                if (t >= 60) return k == lit ? (t % 4 < 2 ? new int[]{255, 215, 0, 100} : new int[]{255, 255, 255, 100}) : new int[]{6, 6, 10, 100};
+                return k == lit ? new int[]{255, 215, 0, 100} : new int[]{20, 15, 0, 100};
+            }
+            case MULTI + 5: {   // Tűzijáték: 150 ms ticks, random bursts (white, then a colour fading over 6 ticks)
+                for (int d = 0; d < 7; d++) {
+                    int s = n - d;
+                    if (s >= 0 && seeded(s, 100 + k) % 100 < 7) {
+                        if (d == 0) return new int[]{255, 255, 255, 150};
+                        int[] c = hsv(seeded(s, 200 + k) % 360, 150);
+                        float lv = 1f - d / 7f;
+                        return new int[]{(int) (c[0] * lv), (int) (c[1] * lv), (int) (c[2] * lv), 150};
+                    }
+                }
+                return new int[]{3, 3, 6, 150};
+            }
+            default:
+                return new int[]{0, 0, 0, 300};
         }
+    }
+
+    /** Deterministic pseudo-random for games: every phone in the session (same curNonce) gets the same numbers. */
+    int seeded(int a, int b) {
+        long x = curNonce * 0x9E3779B97F4A7C15L + a * 0xBF58476D1CE4E5B9L + b * 0x94D049BB133111EBL;
+        x ^= x >>> 31; x *= 0x7FB5D329728EA185L; x ^= x >>> 27; x *= 0x81DADEF4BC2DD44DL; x ^= x >>> 33;
+        return (int) (x & 0x7FFFFFFF);
+    }
+
+    int[] potato(int step, int len, int round, int k, int total) {
+        if (step < len) {   // hopping: holder of this hop, never the same lamp twice in a row
+            int holder = seeded(round, 10 + step) % total;
+            if (step > 0 && total > 1 && holder == seeded(round, 10 + step - 1) % total) holder = (holder + 1) % total;
+            return k == holder ? new int[]{255, 140, 0, 250} : new int[]{10, 6, 0, 250};
+        }
+        int loser = seeded(round, 10 + len - 1) % total;   // whoever held it on the last hop
+        if (len > 1 && total > 1 && loser == seeded(round, 10 + len - 2) % total) loser = (loser + 1) % total;
+        int t = step - len;
+        return k == loser ? (t % 2 == 0 ? new int[]{255, 0, 0, 250} : new int[]{40, 0, 0, 250}) : new int[]{0, 30, 0, 250};
     }
 
     /** Colour and hold time of animation step n. */
