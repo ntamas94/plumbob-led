@@ -12,7 +12,7 @@ if ($LASTEXITCODE) { throw "build failed" }
 $apk = Resolve-Path "$PSScriptRoot\..\PlumbobLED.apk"
 
 $notes = if ($args.Count) { $args -join " " } else { "Plumbob LED $tag" }
-gh release view $tag --repo $repo *> $null
+cmd /c "gh release view $tag --repo $repo >nul 2>&1"   # PS 5.1 turns gh's stderr into an error, cmd swallows it
 if ($LASTEXITCODE -eq 0) {
     gh release upload $tag $apk --clobber --repo $repo
 } else {
