@@ -17,8 +17,10 @@ if ($LASTEXITCODE) { throw "aapt2 failed" }
 $src = Get-ChildItem -Recurse "$PSScriptRoot\src" -Filter *.java | ForEach-Object FullName
 & "$jdk\javac.exe" --release 11 -cp $jar -encoding UTF-8 -d "$out\classes" $src
 if ($LASTEXITCODE) { throw "javac failed" }
-& "$jdk\java.exe" -cp "$out\classes" hu.ntamas.plumbob.Proto
-if ($LASTEXITCODE) { throw "Proto self-check failed" }
+foreach ($check in "Proto", "Frames", "Beacons") {
+    & "$jdk\java.exe" -cp "$out\classes;$jar" hu.ntamas.plumbob.$check
+    if ($LASTEXITCODE) { throw "$check self-check failed" }
+}
 
 $classes = Get-ChildItem -Recurse "$out\classes" -Filter *.class | ForEach-Object FullName
 & "$bt\d8.bat" --lib $jar --min-api 26 --output "$out\dex" $classes
