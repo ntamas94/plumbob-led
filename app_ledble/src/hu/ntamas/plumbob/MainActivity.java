@@ -455,7 +455,10 @@ public class MainActivity extends Activity {
         stopService(new Intent(this, KeepAliveService.class));
         start();
         if (pulse && pulser == null) setPulse(true);
+        if (!autoChecked) { autoChecked = true; ui.postDelayed(() -> checkUpdate(true), 3000); }   // once per launch, quietly
     }
+
+    boolean autoChecked;
 
     @Override protected void onStop() {
         super.onStop();
@@ -616,9 +619,11 @@ public class MainActivity extends Activity {
         BluetoothLeAdvertiser adv = adapter.getBluetoothLeAdvertiser();
         if (adv == null) { Toast.makeText(this, "Ez a telefon nem tud BLE-hirdetést küldeni", Toast.LENGTH_LONG).show(); return false; }
         byte[] name = myName().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        byte[] p = new byte[5 + Math.min(name.length, 14)];
+        byte[] p = new byte[8 + Math.min(name.length, 12)];
         p[0] = (byte) type; p[1] = (byte) idx; p[2] = (byte) (nonce >> 8); p[3] = (byte) nonce; p[4] = (byte) myMask();
-        System.arraycopy(name, 0, p, 5, p.length - 5);
+        p[5] = (byte) base[0]; p[6] = (byte) base[1]; p[7] = (byte) base[2];   // the colour the chase runs in
+        System.arraycopy(name, 0, p, 8, p.length - 8);
+        fastInviteScan();   // for the next 30 s listen closely for accepts / roster beacons
         AdvertiseSettings s = new AdvertiseSettings.Builder().setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH).setConnectable(false).setTimeout(ms).build();
         AdvertiseData d = new AdvertiseData.Builder().setIncludeDeviceName(false).addManufacturerData(COMPANY, p).build();
@@ -632,19 +637,32 @@ public class MainActivity extends Activity {
     };
     final AdvertiseCallback acceptAdvCb = new AdvertiseCallback() { };
 
-    // Low-power scan with a hardware filter on our manufacturer id; runs while the app is up.
+    // Scan with a hardware filter on our manufacturer id; low power while idle, low latency around a group session.
     @SuppressWarnings("MissingPermission")
-    void startInviteScan() {
+    void startInviteScan() { startInviteScan(false); }
+
+    @SuppressWarnings("MissingPermission")
+    void startInviteScan(boolean fast) {
         BluetoothLeScanner sc = adapter.getBluetoothLeScanner();
-        if (sc == null || inviteScanning) return;
+        if (sc == null) return;
+        if (inviteScanning) sc.stopScan(inviteCb);
         ScanFilter f = new ScanFilter.Builder().setManufacturerData(COMPANY, new byte[0]).build();   // any of our beacons
-        ScanSettings s = new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build();
+        ScanSettings s = new ScanSettings.Builder().setScanMode(fast ? ScanSettings.SCAN_MODE_LOW_LATENCY : ScanSettings.SCAN_MODE_LOW_POWER).build();
         sc.startScan(Collections.singletonList(f), s, inviteCb);
         inviteScanning = true;
     }
 
+    final Runnable slowScan = () -> { if (inviteScanning) startInviteScan(false); };
+
+    void fastInviteScan() {
+        startInviteScan(true);
+        ui.removeCallbacks(slowScan);
+        ui.postDelayed(slowScan, 30000);
+    }
+
     @SuppressWarnings("MissingPermission")
     void stopInviteScan() {
+        ui.removeCallbacks(slowScan);
         if (!inviteScanning) return;
         inviteScanning = false;
         BluetoothLeScanner sc = adapter.getBluetoothLeScanner();
@@ -656,9 +674,10 @@ public class MainActivity extends Activity {
         public void onScanResult(int type, ScanResult r) {
             if (r.getScanRecord() == null) return;
             byte[] p = r.getScanRecord().getManufacturerSpecificData(COMPANY);
-            if (p == null || p.length < 5 || p[0] < 1 || p[0] > 3) return;
+            if (p == null || p.length < 8 || p[0] < 1 || p[0] > 3) return;
             int kind = p[0], idx = p[1] & 0xFF, nonce = ((p[2] & 0xFF) << 8) | (p[3] & 0xFF), mask = p[4] & 0xFF;
-            String from = new String(p, 5, p.length - 5, java.nio.charset.StandardCharsets.UTF_8);
+            int[] col = {p[5] & 0xFF, p[6] & 0xFF, p[7] & 0xFF};
+            String from = new String(p, 8, p.length - 8, java.nio.charset.StandardCharsets.UTF_8);
             if (kind == 3) {   // attack on PEOPLE[idx]: applies on the phone that owns that lamp, once per nonce
                 runOnUiThread(() -> {
                     if (seenAttacks.contains(nonce) || idx >= PEOPLE.length || (myMask() & (1 << idx)) == 0) return;
@@ -682,11 +701,12 @@ public class MainActivity extends Activity {
                     .setMessage(from + " meghív: " + ANIMS[idx][0] + ". Csatlakozol?")
                     .setPositiveButton("Igen", (d, w) -> {
                         showPage(2);
+                        base = col;          // run the chase in the inviter's colour so all lamps match
                         startAnim(idx);
                         groupMode = true;
                         curNonce = nonce;
                         roster = mask | myMask();
-                        advertise(2, idx, nonce, 12000, acceptAdvCb);   // tell the others (and the sender) we are in
+                        advertise(2, idx, nonce, 30000, acceptAdvCb);   // tell the others (and the sender) we are in
                     })
                     .setNegativeButton("Nem", null)
                     .show();
@@ -900,25 +920,27 @@ public class MainActivity extends Activity {
         catch (PackageManager.NameNotFoundException e) { return 0; }
     }
 
-    // GitHub release tag "v<versionCode>": newer than ours -> download and hand to the system installer.
-    void checkUpdate() {
-        Toast.makeText(this, "Frissítés keresése…", Toast.LENGTH_SHORT).show();
+    // GitHub release tag "v<versionCode>": newer than ours -> download and install (silently where Android allows it).
+    void checkUpdate() { checkUpdate(false); }
+
+    void checkUpdate(boolean quiet) {
+        if (!quiet) Toast.makeText(this, "Frissítés keresése…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             String msg;
             try {
                 int latest = Updater.latestCode();
-                if (latest < 0) msg = "Nincs még kiadás a GitHubon.";
-                else if (latest <= versionCode()) msg = "Ez a legfrissebb (v" + latest + ").";
+                if (latest < 0) msg = quiet ? null : "Nincs még kiadás a GitHubon.";
+                else if (latest <= versionCode()) msg = quiet ? null : "Ez a legfrissebb (v" + latest + ").";
                 else {
-                    runOnUiThread(() -> Toast.makeText(this, "Új verzió: v" + latest + " – letöltés…", Toast.LENGTH_LONG).show());
+                    runOnUiThread(() -> Toast.makeText(this, "Új verzió: v" + latest + " – települ…", Toast.LENGTH_LONG).show());
                     Updater.install(this);
-                    msg = "Letöltve, a telepítést a telefon kérdezi.";
+                    msg = "v" + latest + " letöltve; ha a telefon kérdez, Telepítés, különben magától frissül.";
                 }
             } catch (Exception e) {
-                msg = "Frissítés hiba: " + e.getMessage();
+                msg = quiet ? null : "Frissítés hiba: " + e.getMessage();
             }
             String m = msg;
-            runOnUiThread(() -> { Toast.makeText(this, m, Toast.LENGTH_LONG).show(); status.setText(m); });
+            if (m != null) runOnUiThread(() -> { Toast.makeText(this, m, Toast.LENGTH_LONG).show(); status.setText(m); });
         }).start();
     }
 
@@ -1161,15 +1183,15 @@ public class MainActivity extends Activity {
     /** Frame for lamp k of total in a multi-lamp animation. */
     int[] multiFrame(int idx, int n, int k, int total) {
         switch (idx) {
-            case MULTI: {       // Futófény: one lamp lit in the base colour, the rest dim, running round
+            case MULTI: {       // Futófény: one lamp lit in the base colour, the rest dark, running round
                 int lit = n % total;
-                return k == lit ? new int[]{base[0], base[1], base[2], 300} : new int[]{base[0] / 12, base[1] / 12, base[2] / 12, 300};
+                return k == lit ? new int[]{base[0], base[1], base[2], 300} : new int[]{0, 0, 0, 300};
             }
             case MULTI + 1: {   // Pingpong: same, bouncing back and forth
                 int span = Math.max(1, 2 * total - 2);
                 int p = n % span;
                 int lit = p < total ? p : span - p;
-                return k == lit ? new int[]{base[0], base[1], base[2], 250} : new int[]{base[0] / 12, base[1] / 12, base[2] / 12, 250};
+                return k == lit ? new int[]{base[0], base[1], base[2], 250} : new int[]{0, 0, 0, 250};
             }
             case MULTI + 2:     // Hullám: rainbow, each lamp a share of the turn behind the previous one
                 return hsv((n * 8 + k * (360 / total)) % 360, 120);

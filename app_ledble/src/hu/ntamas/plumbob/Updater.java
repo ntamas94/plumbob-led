@@ -37,6 +37,8 @@ final class Updater {
     static void install(Context ctx) throws IOException {
         PackageInstaller pi = ctx.getPackageManager().getPackageInstaller();
         PackageInstaller.SessionParams p = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+        // Silent update once this app is the installer of record (true from the first self-update on), Android 12+.
+        if (android.os.Build.VERSION.SDK_INT >= 31) p.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
         int id = pi.createSession(p);
         try (PackageInstaller.Session s = pi.openSession(id)) {
             HttpURLConnection c = open(APK_URL);
