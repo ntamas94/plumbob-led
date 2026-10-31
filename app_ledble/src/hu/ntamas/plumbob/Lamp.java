@@ -21,6 +21,7 @@ final class Lamp {
     int[] colour = {0, 0, 0};   // last colour sent; fades start from here
     int fadeId;                 // bumping it cancels a running fade
     int hp = 100;               // life points of the wearer
+    String mood;                // last mood applied to this lamp; re-applied after a reconnect
 
     Lamp(BluetoothDevice device, String name, String person) {
         this.device = device;

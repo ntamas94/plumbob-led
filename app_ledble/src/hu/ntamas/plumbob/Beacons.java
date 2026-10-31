@@ -23,6 +23,9 @@ import java.util.Collections;
 final class Beacons {
     static final int COMPANY = 0xFFFF;
     static final int INVITE = 1, ACCEPT = 2, ATTACK = 3, ACK = 4;
+    /** High nibble of byte 0. Bump it whenever Frames' deterministic maths or this payload changes, so older
+     *  app versions ignore us instead of joining a session they would run differently. v17 and older: nibble 0. */
+    static final int PROTOCOL = 0x10;
 
     static final class Msg {
         final int kind, idx, nonce, mask;
@@ -58,18 +61,20 @@ final class Beacons {
     static byte[] encode(int kind, int idx, int nonce, int mask, int[] colour, String from) {
         byte[] name = from.getBytes(StandardCharsets.UTF_8);
         byte[] p = new byte[8 + Math.min(name.length, 12)];
-        p[0] = (byte) kind; p[1] = (byte) idx; p[2] = (byte) (nonce >> 8); p[3] = (byte) nonce; p[4] = (byte) mask;
+        p[0] = (byte) (PROTOCOL | kind); p[1] = (byte) idx; p[2] = (byte) (nonce >> 8); p[3] = (byte) nonce; p[4] = (byte) mask;
         p[5] = (byte) colour[0]; p[6] = (byte) colour[1]; p[7] = (byte) colour[2];
         System.arraycopy(name, 0, p, 8, p.length - 8);
         return p;
     }
 
-    /** Null when the payload is not one of ours. */
+    /** Null when the payload is not one of ours (or from an app version with different rules). */
     static Msg decode(byte[] p) {
-        if (p == null || p.length < 8 || p[0] < INVITE || p[0] > ACK) return null;
+        if (p == null || p.length < 8 || (p[0] & 0xF0) != PROTOCOL) return null;
+        int kind = p[0] & 0x0F;
+        if (kind < INVITE || kind > ACK) return null;
         int nonce = ((p[2] & 0xFF) << 8) | (p[3] & 0xFF);
         int[] colour = {p[5] & 0xFF, p[6] & 0xFF, p[7] & 0xFF};
-        return new Msg(p[0], p[1] & 0xFF, nonce, p[4] & 0xFF, colour, new String(p, 8, p.length - 8, StandardCharsets.UTF_8));
+        return new Msg(kind, p[1] & 0xFF, nonce, p[4] & 0xFF, colour, new String(p, 8, p.length - 8, StandardCharsets.UTF_8));
     }
 
     /** Advertise one message for ms milliseconds. False when this phone cannot advertise. */
@@ -120,6 +125,7 @@ final class Beacons {
         if (m == null || m.kind != ATTACK || m.idx != 2 || m.nonce != 0xBEEF || m.mask != 6 || m.colour[2] != 120 || !"Tamás".equals(m.from))
             throw new AssertionError("round trip");
         if (decode(new byte[]{9, 0, 0, 0, 0, 0, 0, 0}) != null || decode(null) != null) throw new AssertionError("foreign payloads are ignored");
+        if (decode(new byte[]{3, 2, 0, 0, 6, 0, 0, 0}) != null) throw new AssertionError("v17-style payload (no protocol nibble) is ignored");
         if (encode(INVITE, 0, 0, 0, new int[]{0, 0, 0}, "Hosszúnévvalakinek").length > 20) throw new AssertionError("fits a legacy advertisement");
         System.out.println("Beacons OK");
     }

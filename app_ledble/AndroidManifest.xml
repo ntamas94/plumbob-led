@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="hu.ntamas.plumbobled"
-    android:versionCode="18"
-    android:versionName="1.17">
+    android:versionCode="19"
+    android:versionName="1.18">
 
-    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="36" />
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
@@ -15,8 +15,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
@@ -31,6 +33,6 @@
             </intent-filter>
         </activity>
         <receiver android:name="hu.ntamas.plumbob.UpdateReceiver" android:exported="false" />
-        <service android:name="hu.ntamas.plumbob.KeepAliveService" android:exported="false" android:foregroundServiceType="connectedDevice" />
+        <service android:name="hu.ntamas.plumbob.KeepAliveService" android:exported="false" android:foregroundServiceType="connectedDevice|microphone" />
     </application>
 </manifest>

@@ -34,6 +34,8 @@ import java.util.UUID;
  */
 final class LampLink {
     interface Listener {
+        void onScanStarted();                 // a 10 s scan burst begins
+        void onScanStopped();                 // it ended (timeout or failure, see scanError)
         void onSeen(String advertisedName);   // every name seen during a scan, for diagnostics
         void onFound(Lamp lamp);              // registered, connection pending
         void onReady(Lamp lamp);              // connected, handshake sent: colours can go
@@ -50,6 +52,7 @@ final class LampLink {
     final Map<String, Lamp> lamps = new LinkedHashMap<>();   // by MAC, discovery order
     final Set<String> seen = new TreeSet<>();                // advertised names of the current scan
     boolean scanning, active;
+    int scanError;                                           // last ScanCallback error code, 0 when fine
     Lamp connecting;
 
     private final Context context;
@@ -81,10 +84,20 @@ final class LampLink {
         BluetoothLeScanner sc = adapter.getBluetoothLeScanner();
         if (sc == null || scanning || !active) return;
         scanning = true;
+        scanError = 0;
         seen.clear();
+        listener.onScanStarted();
         listener.onStateChanged();
         ScanSettings s = new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
-        sc.startScan(null, s, scanCb);   // no UUID filter: the lamp does not advertise FFE0, we filter on the "LED" name
+        try {
+            sc.startScan(null, s, scanCb);   // no UUID filter: the lamp does not advertise FFE0, we filter on the "LED" name
+        } catch (SecurityException e) {      // BLUETOOTH_SCAN denied: the rescan buttons bypass the permission flow
+            scanning = false;
+            scanError = -1;
+            listener.onStateChanged();
+            listener.onScanStopped();
+            return;
+        }
         ui.postDelayed(this::stopScan, SCAN_MS);
     }
 
@@ -95,6 +108,7 @@ final class LampLink {
         BluetoothLeScanner sc = adapter.getBluetoothLeScanner();
         if (sc != null) sc.stopScan(scanCb);
         listener.onStateChanged();
+        listener.onScanStopped();
     }
 
     private final ScanCallback scanCb = new ScanCallback() {
@@ -116,16 +130,35 @@ final class LampLink {
         }
 
         @Override
-        public void onScanFailed(int err) { ui.post(() -> { scanning = false; listener.onStateChanged(); }); }
+        public void onScanFailed(int err) {
+            ui.post(() -> { scanning = false; scanError = err; listener.onStateChanged(); listener.onScanStopped(); });
+        }
     };
 
     // Android handles parallel connection attempts badly, so connect one at a time.
     @SuppressWarnings("MissingPermission")
     void connectNext() {
         if (connecting != null || toConnect.isEmpty() || !active) return;
-        connecting = toConnect.poll();
-        connecting.gatt = connecting.device.connectGatt(context, false, gattCb, BluetoothDevice.TRANSPORT_LE);
+        Lamp lamp = toConnect.poll();
+        lamp.gatt = lamp.device.connectGatt(context, false, gattCb, BluetoothDevice.TRANSPORT_LE);
+        if (lamp.gatt == null) {   // adapter off / no GATT client: no callback will ever come, retry like a drop
+            retryLater(lamp);
+            listener.onStateChanged();
+            connectNext();
+            return;
+        }
+        connecting = lamp;
         listener.onStateChanged();
+    }
+
+    /** Reconnect straight to the MAC we already know after RECONNECT_MS; no rescan needed. */
+    private void retryLater(Lamp lamp) {
+        ui.postDelayed(() -> {
+            if (active && lamp.gatt == null && !toConnect.contains(lamp) && lamps.get(lamp.mac()) == lamp) {
+                toConnect.add(lamp);
+                connectNext();
+            }
+        }, RECONNECT_MS);
     }
 
     private final BluetoothGattCallback gattCb = new BluetoothGattCallback() {
@@ -136,30 +169,24 @@ final class LampLink {
             if (state != BluetoothProfile.STATE_DISCONNECTED) return;
             g.close();
             ui.post(() -> {
-                String mac = g.getDevice().getAddress();
-                Lamp lamp = lamps.get(mac);
+                Lamp lamp = lamps.get(g.getDevice().getAddress());
                 if (lamp == null) return;
-                lamp.gatt = null;
-                lamp.command = null;
-                lamp.inFlight = null;
-                lamp.queue.clear();
+                detach(lamp);
                 if (connecting == lamp) connecting = null;
                 listener.onDropped(lamp);
                 listener.onStateChanged();
                 connectNext();
-                // Reconnect straight to the MAC we already know; no rescan needed.
-                ui.postDelayed(() -> {
-                    if (active && lamp.gatt == null && !toConnect.contains(lamp) && lamps.get(mac) == lamp) {
-                        toConnect.add(lamp);
-                        connectNext();
-                    }
-                }, RECONNECT_MS);
+                retryLater(lamp);
             });
         }
 
         @Override
         @SuppressWarnings("MissingPermission")
         public void onServicesDiscovered(BluetoothGatt g, int st) {
+            if (st != BluetoothGatt.GATT_SUCCESS) {   // transient discovery error (129/133 right after a reconnect): treat as a drop, not as "not a lamp"
+                onConnectionStateChange(g, st, BluetoothProfile.STATE_DISCONNECTED);
+                return;
+            }
             BluetoothGattService s = g.getService(SERVICE);
             BluetoothGattCharacteristic c = s == null ? null : s.getCharacteristic(COMMAND);
             ui.post(() -> {
@@ -178,7 +205,7 @@ final class LampLink {
                 listener.onStateChanged();
                 connectNext();
                 ui.postDelayed(() -> {
-                    if (!lamp.connected()) return;
+                    if (!lamp.connected() || lamps.get(lamp.mac()) != lamp) return;   // dropped or released meanwhile
                     if (lamp.family != Proto.SMART) enqueue(lamp, passwordFrame());
                     listener.onReady(lamp);
                 }, HANDSHAKE_DELAY_MS);
@@ -231,12 +258,21 @@ final class LampLink {
         e.apply();
     }
 
+    /** Forget the BLE handles of a lamp whose connection is gone (closed or dropped). */
+    private static void detach(Lamp lamp) {
+        lamp.gatt = null;
+        lamp.command = null;
+        lamp.inFlight = null;
+        lamp.queue.clear();
+    }
+
     /** Disconnect and ignore the lamp on this phone until forgetReleased(); another phone can take it. */
     @SuppressWarnings("MissingPermission")
     void release(Lamp lamp) {
         ignored.add(lamp.mac());
         prefs.edit().putStringSet(IGNORE_KEY, new HashSet<>(ignored)).apply();
         if (lamp.gatt != null) lamp.gatt.close();
+        detach(lamp);
         lamps.remove(lamp.mac());
         toConnect.remove(lamp);
         if (connecting == lamp) connecting = null;
@@ -255,7 +291,7 @@ final class LampLink {
         stopScan();
         connecting = null;
         toConnect.clear();
-        for (Lamp l : lamps.values()) if (l.gatt != null) l.gatt.close();
+        for (Lamp l : lamps.values()) { if (l.gatt != null) l.gatt.close(); detach(l); }
         lamps.clear();
     }
 }

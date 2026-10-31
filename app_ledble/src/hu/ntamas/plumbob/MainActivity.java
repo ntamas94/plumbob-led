@@ -115,7 +115,8 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     int animStep, animWait;
     int epoch;   // bumped on every switch; delayed lambdas of the previous one check it and bail
     boolean shake = true;
-    volatile boolean micOn;
+    volatile int micGen;   // capture generation; bumping it ends the running capture thread
+    boolean micRunning;
 
     // Group sessions and board-game attacks over Beacons
     boolean groupMode;   // lamps take their roster slot and the clock's step, so phones run one chase
@@ -126,6 +127,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
 
     // Life points
     int hpMax = 100;
+    final Map<String, Integer> hpByMac = new HashMap<>();   // survives onStop/onStart (lamps are re-discovered as new objects)
     boolean autoChecked;
 
     // ---------------------------------------------------------------- lifecycle
@@ -150,7 +152,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     @Override protected void onStart() {
         super.onStart();
         link.active = true;
-        stopService(new Intent(this, KeepAliveService.class));
+        if (!micRunning) stopService(new Intent(this, KeepAliveService.class));   // the mic service was started in the foreground on purpose
         start();
         if (pulse && pulser == null) setPulse(true);
         if (decay != null) { ui.removeCallbacks(decay); ui.postDelayed(decay, DECAY_STEP_MS); }
@@ -160,7 +162,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     @Override protected void onStop() {
         super.onStop();
         if (anim != null || pulse || levelup != null) {
-            startForegroundService(new Intent(this, KeepAliveService.class));
+            startForegroundService(new Intent(this, KeepAliveService.class).putExtra("mic", micRunning));
             return;   // link stays active: reconnects and scans keep working in the background
         }
         shutDown();
@@ -192,6 +194,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         levelup = null;
         anim = null;
         pulser = null;
+        for (Lamp l : link.lamps.values()) hpByMac.put(l.mac(), l.hp);   // the game must survive a trip to the home screen
         link.closeAll();
         rows.clear();
         lampList.removeAllViews();
@@ -223,7 +226,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     @Override
     public void onRequestPermissionsResult(int code, String[] p, int[] res) {
         if (code == 3) {
-            if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) startMic();
+            if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) startAnim(Frames.MIC);
             else toast("Mikrofon engedély kell a Zene animációhoz");
             return;
         }
@@ -236,7 +239,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
 
     @Override
     protected void onActivityResult(int code, int result, Intent data) {
-        if (code == 2) start();
+        if (code == 2 && result == RESULT_OK) start();   // declined "turn on Bluetooth" must not re-open the dialog forever
     }
 
     // ---------------------------------------------------------------- screen
@@ -444,8 +447,8 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         lampList.setOrientation(LinearLayout.VERTICAL);
         lampList.setPadding(dp(8), 0, 0, dp(8));
         page.addView(lampList);
-        page.addView(button("Keresés újra", v -> link.scan()));
-        page.addView(button("Elengedettek vissza", v -> { link.forgetReleased(); link.scan(); toast("Minden lámpa újra felvehető"); }));
+        page.addView(button("Keresés újra", v -> start()));   // through start(): permissions / Bluetooth-on checks first
+        page.addView(button("Elengedettek vissza", v -> { link.forgetReleased(); start(); toast("Minden lámpa újra felvehető"); }));
         page.addView(button("Frissítés keresése (v" + versionCode() + ")", v -> checkUpdate(false)));
 
         TextView whiteLabel = text("Fehér (Fókuszált, fehér villanások)", Color.WHITE, 14);
@@ -564,10 +567,20 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         String s = on + "/" + link.lamps.size() + " lámpa csatlakozva";
         if (link.scanning) s += " – keresés…";
         else if (link.connecting != null) s += " – csatlakozás: " + link.connecting.name;
+        if (link.scanError != 0) s += " – keresési hiba: " + (link.scanError < 0 ? "nincs Bluetooth-engedély" : link.scanError);
         status.setText(link.lamps.isEmpty() && link.scanning ? "Lámpák keresése…" : s);
     }
 
     // ---------------------------------------------------------------- LampLink.Listener
+
+    @Override public void onScanStarted() { seenView.setText(""); }
+
+    @Override public void onScanStopped() {
+        if (!link.lamps.isEmpty()) return;
+        seenView.setText(link.seen.isEmpty()
+            ? "A keresés semmit nem látott: Bluetooth/helymeghatározás be? „Közeli eszközök” engedély?"
+            : "Nincs LED… nevű eszköz. Látott nevek: " + link.seen);
+    }
 
     @Override public void onSeen(String name) { seenView.setText("Látott: " + link.seen); }
 
@@ -576,8 +589,11 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     @Override public void onReady(Lamp lamp) {
         if (!rows.containsKey(lamp)) addRow(lamp);
         rows.get(lamp).label.setTextColor(Color.WHITE);
+        Integer kept = hpByMac.get(lamp.mac());
+        if (kept != null) lamp.hp = Math.min(kept, hpMax);
         showHp(false);
-        if (levelup == null) moodFrames(lamp, mood);
+        // The lamp kept its colour across the drop; re-apply what THIS lamp last showed, not the phone-wide mood.
+        if (levelup == null) moodFrames(lamp, lamp.mood != null ? lamp.mood : mood);
     }
 
     @Override public void onDropped(Lamp lamp) {
@@ -587,12 +603,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
 
     @Override public void onForgotten(Lamp lamp) { removeRow(lamp); }
 
-    @Override public void onStateChanged() {
-        refreshStatus();
-        if (!link.scanning && link.lamps.isEmpty()) seenView.setText(link.seen.isEmpty()
-            ? "A keresés semmit nem látott: Bluetooth/helymeghatározás be? „Közeli eszközök” engedély?"
-            : "Nincs LED… nevű eszköz. Látott nevek: " + link.seen);
-    }
+    @Override public void onStateChanged() { refreshStatus(); }
 
     // ---------------------------------------------------------------- lamp selection
 
@@ -662,6 +673,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
 
     /** Frames that put one lamp into mood m. */
     void moodFrames(Lamp l, String m) {
+        l.mood = m;
         l.fadeId++;
         if ("off".equals(m)) { link.enqueue(l, Proto.off(l.family)); l.colour = new int[]{0, 0, 0}; return; }
         wake(l);
@@ -739,6 +751,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         base = c;
         mood = "rgb:" + c[0] + "," + c[1] + "," + c[2];
         for (Lamp l : selected()) {
+            l.mood = mood;
             l.fadeId++;
             if (fin || l.queue.size() < 2) setColour(l, c);
         }
@@ -803,15 +816,11 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     void startAnim(int idx) {
         fresh();
         groupMode = false;   // a plain tap runs over this phone's own lamps; invitations switch group mode on
-        curNonce = 0;
+        curNonce = rnd.nextInt(65536);   // fresh seed, so a local game is not the same every time; a session overwrites it
         mood = "anim:" + idx;
-        for (Lamp l : selected()) wake(l);
+        for (Lamp l : selected()) { l.mood = mood; wake(l); }
         animStep = 0;
-        if (idx == Frames.MIC) {
-            anim = () -> { };   // marker so onStop keeps the connections alive; the mic thread does the work
-            startMic();
-            return;
-        }
+        if (idx == Frames.MIC) { startMic(); return; }   // startMic sets the 'anim' marker only once capture really runs
         animWait = Frames.isPerLamp(idx) ? Frames.period(idx) : Frames.shared(idx, 0, rnd)[3];
         anim = new Runnable() {
             public void run() {
@@ -844,18 +853,24 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     }
 
     // Microphone-reactive: the base colour scaled by the loudness of what the phone hears, ~10 frames a second.
+    // A generation counter (not a flag) stops the previous capture thread: it is blocked in read() and would miss a
+    // momentary false; posted frames of an old generation are dropped too.
     void startMic() {
         if (checkSelfPermission("android.permission.RECORD_AUDIO") != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{"android.permission.RECORD_AUDIO"}, 3);
             return;
         }
-        micOn = true;
-        new Thread(this::micLoop).start();
+        final int g = ++micGen;
+        micRunning = true;
+        anim = () -> { };   // marker: onStop keeps the connections alive while the mic drives the lamps
+        // Started here, in the foreground, so the microphone type is allowed and keeps working with the screen off.
+        startForegroundService(new Intent(this, KeepAliveService.class).putExtra("mic", true));
+        new Thread(() -> micLoop(g)).start();
     }
 
-    void stopMic() { micOn = false; }
+    void stopMic() { micGen++; micRunning = false; }
 
-    void micLoop() {
+    void micLoop(int g) {
         int rate = 16000, n = 1600;
         AudioRecord rec = null;
         try {
@@ -864,7 +879,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
             rec.startRecording();
             short[] buf = new short[n];
             double peak = 500;
-            while (micOn) {
+            while (g == micGen) {
                 int got = rec.read(buf, 0, n);
                 if (got <= 0) continue;
                 double sum = 0;
@@ -873,7 +888,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
                 peak = Math.max(rms, peak * 0.97);   // adaptive ceiling: quiet rooms still move
                 double level = Math.max(0.06, Math.min(1.0, rms / Math.max(peak, 300)));
                 int[] c = {(int) (base[0] * level), (int) (base[1] * level), (int) (base[2] * level)};
-                ui.post(() -> { if (!micOn) return; for (Lamp l : selected()) if (l.queue.size() < 2) setColour(l, c); });
+                ui.post(() -> { if (g != micGen) return; for (Lamp l : selected()) if (l.queue.size() < 2) setColour(l, c); });
             }
         } catch (Exception e) {
             ui.post(() -> toast("Mikrofon hiba: " + e.getMessage()));
@@ -892,8 +907,13 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         if (send(Beacons.INVITE, idx, curNonce, 20000)) toast("Meghívás küldve: " + Frames.ANIMS[idx][0] + " (20 s)");
     }
 
+    int lastSentRoster;   // what our last session beacon carried; re-advertise only when we know more than that
+
+    /** Session beacons (invite/accept) carry everyone we know of, so late joiners and the host converge on one roster. */
     boolean send(int kind, int idx, int nonce, int ms) {
-        boolean ok = beacons.send(kind, idx, nonce, myMask(), base, myName(), ms);
+        boolean session = kind == Beacons.INVITE || kind == Beacons.ACCEPT;
+        if (session) lastSentRoster = roster;
+        boolean ok = beacons.send(kind, idx, nonce, session ? roster : myMask(), base, myName(), ms);
         if (!ok) toast("Ez a telefon nem tud BLE-hirdetést küldeni");
         return ok;
     }
@@ -912,6 +932,12 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         if (m.idx >= Frames.ANIMS.length) return;
         if (groupMode && m.nonce == curNonce) {   // our session: anyone's beacon grows the roster on every phone
             if ((roster | m.mask) != roster) { roster |= m.mask; toast(m.from + " benne van"); }
+            // The sender knows fewer people than we do: tell everyone once per roster change, then stay quiet.
+            if ((m.mask | roster) != m.mask && roster != lastSentRoster) send(Beacons.ACCEPT, m.idx, curNonce, 30000);
+            return;
+        }
+        if (groupMode && curNonce == myNonce && m.kind == Beacons.INVITE) {   // two hosts invited at once: the lower nonce wins, nobody is asked
+            if (m.nonce < curNonce) acceptInvite(m);
             return;
         }
         if (m.kind != Beacons.INVITE || m.nonce == myNonce || m.nonce == lastInviteNonce) return;
@@ -925,12 +951,13 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     }
 
     void acceptInvite(Beacons.Msg m) {
+        int known = groupMode ? roster : 0;   // a host switching sessions keeps the people it already knows
         showPage(2);
         base = m.colour;   // run the chase in the inviter's colour so all lamps match
         startAnim(m.idx);
         groupMode = true;
         curNonce = m.nonce;
-        roster = m.mask | myMask();
+        roster = known | m.mask | myMask();
         send(Beacons.ACCEPT, m.idx, m.nonce, 30000);   // tell the others (and the sender) we are in
     }
 
@@ -951,21 +978,30 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         showHp(true);
     }
 
+    /** New maximum for everyone, refilled: every connected lamp gets its colour, not only the "Kinek" ones. */
     void setHpMax(int m) {
         hpMax = m;
-        for (Lamp l : link.lamps.values()) l.hp = m;
-        showHp(true);
+        mood = "hp";
+        fresh();
+        for (Lamp l : link.lamps.values()) {
+            l.hp = m;
+            if (l.connected()) { l.queue.clear(); moodFrames(l, "hp"); }
+        }
+        showHp(false);
     }
 
     /** One lamp takes a hit: white flash, then its HP colour (or the dead red flash). */
     void hit(Lamp l, String from) {
         l.hp = Math.max(0, l.hp - 1);
         toast(from + " megtámadta: " + l.shortName() + " (−1)");
+        boolean interrupted = anim != null || levelup != null;
+        fresh();   // stops any animation (and the mic) phone-wide, new epoch
+        groupMode = false;
         mood = "hp";
+        if (interrupted) for (Lamp x : link.lamps.values()) if (x != l && x.connected()) moodFrames(x, "hp");   // siblings must not freeze on their last animation frame
         l.fadeId++;
         l.queue.clear();
-        final int ep = ++epoch;
-        if (anim != null) stopAnim();
+        final int ep = epoch;
         wake(l);
         link.enqueue(l, Proto.rgb(l.family, 255, 255, 255));
         ui.postDelayed(() -> { if (ep != epoch || !l.connected()) return; l.colour = new int[]{255, 255, 255}; moodFrames(l, "hp"); }, 200);

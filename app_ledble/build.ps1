@@ -23,7 +23,7 @@ foreach ($check in "Proto", "Frames", "Beacons") {
 }
 
 $classes = Get-ChildItem -Recurse "$out\classes" -Filter *.class | ForEach-Object FullName
-& "$bt\d8.bat" --lib $jar --min-api 26 --output "$out\dex" $classes
+& "$bt\d8.bat" --lib $jar --min-api 28 --output "$out\dex" $classes
 if ($LASTEXITCODE) { throw "d8 failed" }
 
 Push-Location "$out\dex"; & "$jdk\jar.exe" uf "$out\unsigned.apk" classes.dex; Pop-Location

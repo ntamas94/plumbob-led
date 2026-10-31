@@ -29,7 +29,11 @@ public class KeepAliveService extends Service {
             .setContentIntent(open)
             .setOngoing(true)
             .build();
-        if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        // The microphone type is needed for "Zene" to keep hearing with the screen off; it is only legal when
+        // RECORD_AUDIO is granted (the caller sets "mic" only then) and when started from the foreground.
+        int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
+        if (Build.VERSION.SDK_INT >= 30 && intent != null && intent.getBooleanExtra("mic", false)) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+        if (Build.VERSION.SDK_INT >= 29) startForeground(1, n, type);
         else startForeground(1, n);
         return START_NOT_STICKY;
     }

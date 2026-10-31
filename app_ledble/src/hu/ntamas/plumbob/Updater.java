@@ -51,6 +51,9 @@ final class Updater {
             Intent i = new Intent(ctx, UpdateReceiver.class);
             PendingIntent pend = PendingIntent.getBroadcast(ctx, 0, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
             s.commit(pend.getIntentSender());
+        } catch (IOException | RuntimeException e) {
+            pi.abandonSession(id);   // a failed download must not leave a staged half-APK behind on every launch
+            throw e;
         }
     }
 
