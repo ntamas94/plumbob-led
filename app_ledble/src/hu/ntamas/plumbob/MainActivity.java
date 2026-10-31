@@ -291,7 +291,7 @@ public class MainActivity extends Activity {
         }
         pages[2].addView(anGrid);
         TextView anHint = new TextView(this);
-        anHint.setText("Csoport-animáció hosszú nyomásra: meghívást küld a közeli telefonoknak (Bluetooth), akik elfogadják, azoknál is elindul, óra-szinkronban.");
+        anHint.setText("Sima nyomás: a csoport-animáció a saját lámpáid közt fut (2 lámpa = oda-vissza). Hosszú nyomás: meghívást küld a közeli telefonoknak (Bluetooth); akik elfogadják, azoknál is elindul, óra-szinkronban, a Kié?-nevek sorrendjében.");
         anHint.setTextColor(0xCCFFFFFF);
         anHint.setTextSize(13);
         anHint.setPadding(0, dp(6), 0, 0);
@@ -540,39 +540,59 @@ public class MainActivity extends Activity {
     int myNonce;
     int lastInviteNonce = -1;
     boolean inviteScanning;
+    boolean groupMode;   // set by sending/accepting an invitation: lamps take their slot in the roster and the clock's step
+    int roster;          // bitmask over PEOPLE of who is in the group animation (merged from invite + accept beacons)
+    int curNonce;        // the group session we are in (sender's nonce)
 
     String myName() {
         for (Bob b : bobs.values()) if (b.person != null) return b.person;
         return "Valaki";
     }
 
+    /** Bit i set when PEOPLE[i] has a lamp on this phone. */
+    int myMask() {
+        int m = 0;
+        for (Bob b : bobs.values()) { int i = b.person == null ? -1 : Arrays.asList(PEOPLE).indexOf(b.person); if (i >= 0) m |= 1 << i; }
+        return m;
+    }
+
     @SuppressWarnings("MissingPermission")
     void sendInvite(int idx) {
         startAnim(idx);
+        groupMode = true;
+        myNonce = curNonce = rnd.nextInt(65536);
+        roster = myMask();
+        if (advertise(1, idx, curNonce, 20000, inviteAdvCb)) Toast.makeText(this, "Meghívás küldve: " + ANIMS[idx][0] + " (20 s)", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Beacon {type, anim, nonce, mask of my wearers, sender name}: type 1 = invite, 2 = accept. */
+    @SuppressWarnings("MissingPermission")
+    boolean advertise(int type, int idx, int nonce, int ms, AdvertiseCallback cb) {
         BluetoothLeAdvertiser adv = adapter.getBluetoothLeAdvertiser();
-        if (adv == null) { Toast.makeText(this, "Ez a telefon nem tud BLE-hirdetést küldeni", Toast.LENGTH_LONG).show(); return; }
-        myNonce = rnd.nextInt(65536);
+        if (adv == null) { Toast.makeText(this, "Ez a telefon nem tud BLE-hirdetést küldeni", Toast.LENGTH_LONG).show(); return false; }
         byte[] name = myName().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        byte[] p = new byte[4 + Math.min(name.length, 16)];
-        p[0] = 1; p[1] = (byte) idx; p[2] = (byte) (myNonce >> 8); p[3] = (byte) myNonce;
-        System.arraycopy(name, 0, p, 4, p.length - 4);
+        byte[] p = new byte[5 + Math.min(name.length, 14)];
+        p[0] = (byte) type; p[1] = (byte) idx; p[2] = (byte) (nonce >> 8); p[3] = (byte) nonce; p[4] = (byte) myMask();
+        System.arraycopy(name, 0, p, 5, p.length - 5);
         AdvertiseSettings s = new AdvertiseSettings.Builder().setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH).setConnectable(false).setTimeout(20000).build();
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH).setConnectable(false).setTimeout(ms).build();
         AdvertiseData d = new AdvertiseData.Builder().setIncludeDeviceName(false).addManufacturerData(COMPANY, p).build();
-        adv.startAdvertising(s, d, inviteAdvCb);
-        Toast.makeText(this, "Meghívás küldve: " + ANIMS[idx][0] + " (20 s)", Toast.LENGTH_SHORT).show();
+        try { adv.stopAdvertising(cb); } catch (Exception ignored) { }
+        adv.startAdvertising(s, d, cb);
+        return true;
     }
 
     final AdvertiseCallback inviteAdvCb = new AdvertiseCallback() {
         @Override public void onStartFailure(int err) { runOnUiThread(() -> Toast.makeText(MainActivity.this, "Meghívás hiba: " + err, Toast.LENGTH_LONG).show()); }
     };
+    final AdvertiseCallback acceptAdvCb = new AdvertiseCallback() { };
 
     // Low-power scan with a hardware filter on our manufacturer id; runs while the app is up.
     @SuppressWarnings("MissingPermission")
     void startInviteScan() {
         BluetoothLeScanner sc = adapter.getBluetoothLeScanner();
         if (sc == null || inviteScanning) return;
-        ScanFilter f = new ScanFilter.Builder().setManufacturerData(COMPANY, new byte[]{1}, new byte[]{(byte) 0xFF}).build();
+        ScanFilter f = new ScanFilter.Builder().setManufacturerData(COMPANY, new byte[0]).build();   // any of our beacons
         ScanSettings s = new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build();
         sc.startScan(Collections.singletonList(f), s, inviteCb);
         inviteScanning = true;
@@ -591,17 +611,31 @@ public class MainActivity extends Activity {
         public void onScanResult(int type, ScanResult r) {
             if (r.getScanRecord() == null) return;
             byte[] p = r.getScanRecord().getManufacturerSpecificData(COMPANY);
-            if (p == null || p.length < 4 || p[0] != 1) return;
-            int idx = p[1] & 0xFF, nonce = ((p[2] & 0xFF) << 8) | (p[3] & 0xFF);
-            if (nonce == myNonce || nonce == lastInviteNonce || idx >= ANIMS.length) return;
-            lastInviteNonce = nonce;
-            String from = new String(p, 4, p.length - 4, java.nio.charset.StandardCharsets.UTF_8);
-            runOnUiThread(() -> new AlertDialog.Builder(MainActivity.this)
-                .setTitle("Meghívás")
-                .setMessage(from + " meghív: " + ANIMS[idx][0] + ". Csatlakozol?")
-                .setPositiveButton("Igen", (d, w) -> { showPage(2); startAnim(idx); })
-                .setNegativeButton("Nem", null)
-                .show());
+            if (p == null || p.length < 5 || (p[0] != 1 && p[0] != 2)) return;
+            int kind = p[0], idx = p[1] & 0xFF, nonce = ((p[2] & 0xFF) << 8) | (p[3] & 0xFF), mask = p[4] & 0xFF;
+            if (idx >= ANIMS.length) return;
+            String from = new String(p, 5, p.length - 5, java.nio.charset.StandardCharsets.UTF_8);
+            runOnUiThread(() -> {
+                if (groupMode && nonce == curNonce) {   // our session: anyone's beacon grows the roster on every phone
+                    if ((roster | mask) != roster) { roster |= mask; Toast.makeText(MainActivity.this, from + " benne van", Toast.LENGTH_SHORT).show(); }
+                    return;
+                }
+                if (kind != 1 || nonce == myNonce || nonce == lastInviteNonce) return;
+                lastInviteNonce = nonce;
+                new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("Meghívás")
+                    .setMessage(from + " meghív: " + ANIMS[idx][0] + ". Csatlakozol?")
+                    .setPositiveButton("Igen", (d, w) -> {
+                        showPage(2);
+                        startAnim(idx);
+                        groupMode = true;
+                        curNonce = nonce;
+                        roster = mask | myMask();
+                        advertise(2, idx, nonce, 12000, acceptAdvCb);   // tell the others (and the sender) we are in
+                    })
+                    .setNegativeButton("Nem", null)
+                    .show();
+            });
         }
     };
 
@@ -967,6 +1001,7 @@ public class MainActivity extends Activity {
     // One animation at a time; each tick sends one colour frame to every selected lamp (skipped if its queue is backed up).
     void startAnim(int idx) {
         stopAnim();
+        groupMode = false;   // a plain tap runs the chase over this phone's own lamps; invitations switch group mode on
         if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
         mood = "anim:" + idx;
         for (Bob b : selected()) { b.fadeId++; enqueue(b, Proto.on(b.fam)); if (!pulse) enqueue(b, Proto.brightness(b.fam, brightness)); }
@@ -982,14 +1017,17 @@ public class MainActivity extends Activity {
                 int total = Math.max(1, sel.size());
                 int[] shared = idx < MULTI ? animFrame(idx, animStep) : null;   // {r, g, b, wait ms}, same for every lamp
                 int wait = shared != null ? shared[3] : multiFrame(idx, 0, 0, 1)[3];
-                // Group mode: not all lamps on this phone -> named lamps take their wearer's slot and the clock's step.
-                boolean group = shared == null && sel.size() < PEOPLE.length;
+                // Group mode (after an invitation): named lamps take their wearer's slot of 4 and the clock's step,
+                // so several phones run one chase; slots of people who are not in stay dark.
+                boolean group = shared == null && groupMode;
                 int clockStep = (int) ((System.currentTimeMillis() / wait) % 1000000);
+                int rosterSize = Integer.bitCount(roster);
                 for (int k = 0; k < sel.size(); k++) {
                     Bob b = sel.get(k);
                     int[] f;
+                    int slot = group && b.person != null ? slotOf(rank(b)) : -1;
                     if (shared != null) f = shared;
-                    else if (group && b.person != null) f = multiFrame(idx, clockStep, rank(b), PEOPLE.length);
+                    else if (slot >= 0) f = multiFrame(idx, clockStep, slot, Math.max(1, rosterSize));
                     else f = multiFrame(idx, animStep, k, total);
                     if (b.queue.size() < 3) { b.cur = new int[]{f[0], f[1], f[2]}; enqueue(b, Proto.rgb(b.fam, f[0], f[1], f[2])); }
                 }
@@ -1011,6 +1049,12 @@ public class MainActivity extends Activity {
     int rank(Bob b) {
         int i = b.person == null ? -1 : Arrays.asList(PEOPLE).indexOf(b.person);
         return i < 0 ? 99 : i;
+    }
+
+    /** Position of PEOPLE[i] inside the roster (people in the group, PEOPLE order), -1 when not in it. */
+    int slotOf(int i) {
+        if (i < 0 || i >= PEOPLE.length || (roster & (1 << i)) == 0) return -1;
+        return Integer.bitCount(roster & ((1 << i) - 1));
     }
 
     /** Frame for lamp k of total in a multi-lamp animation. */
