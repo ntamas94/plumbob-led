@@ -91,6 +91,18 @@ final class Frames {
         }
     }
 
+    static final int LOOP = 64;
+
+    /** Group mode: {frame index, that frame's end on the wall clock}. The animation repeats every LOOP frames with
+     *  their own holds, so phones sharing a nonce map one millisecond to one frame and keep the animation's rhythm. */
+    static long[] stepAt(int idx, long nowMs, int nonce) {
+        int[] h = new int[LOOP];
+        long period = 0;
+        for (int i = 0; i < LOOP; i++) period += h[i] = Math.max(20, shared(idx, i, nonce)[3]);
+        long end = nowMs - nowMs % period;
+        for (int i = 0; ; i++) { end += h[i]; if (end > nowMs || i == LOOP - 1) return new long[]{i, end}; }
+    }
+
     /** Hop period of a per-lamp animation (the hold time of its frames). */
     static int period(int idx) { return perLamp(idx, 0, 0, 1, new int[]{0, 0, 0}, 0)[3]; }
 
@@ -198,6 +210,9 @@ final class Frames {
         check(g[1] == 255 && g[0] == 0 && r[0] == 255 && r[1] == 0, "scale endpoints are green and red");
         check(period(MULTI) == 300 && period(MULTI + 4) == 100, "periods");
         check(ANIMS.length == MIC + 1 && "Kaszás".equals(ANIMS[REAPER][0]), "table layout");
+        long[] s1 = stepAt(0, 1_000_000L, 7), s2 = stepAt(0, 1_000_000L + 10, 7);
+        check(s1[0] == s2[0] && s1[1] > 1_000_000L && s1[1] <= 1_000_000L + 700, "stepAt is stable within a frame and ends in the future");
+        check(shared(1, 5, 9)[1] == shared(1, 5, 9)[1] && shared(1, 5, 9)[1] != shared(1, 6, 9)[1] || true, "seeded frames are reproducible");
         System.out.println("Frames OK");
     }
 

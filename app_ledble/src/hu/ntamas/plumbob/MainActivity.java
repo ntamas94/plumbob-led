@@ -167,7 +167,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
 
     @Override protected void onStop() {
         super.onStop();
-        if (anim != null || pulse || levelup != null) {
+        if (anim != null || pulse || levelup != null || show != null) {
             startForegroundService(new Intent(this, KeepAliveService.class).putExtra("mic", micRunning));
             return;   // link stays active: reconnects and scans keep working in the background
         }
@@ -200,6 +200,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         levelup = null;
         anim = null;
         pulser = null;
+        show = null;
         for (Lamp l : link.lamps.values()) hpByMac.put(l.mac(), l.hp);   // the game must survive a trip to the home screen
         link.closeAll();
         rows.clear();
@@ -368,7 +369,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         for (int i = 0; i < 3; i++) {
             final int k = i;
             page.addView(text(ch[i], 0xCCFFFFFF, 12));
-            page.addView(seekBar(255, custom[i], v -> { custom[k] = v; applyMood("rgb:" + custom[0] + "," + custom[1] + "," + custom[2]); }));
+            page.addView(seekBar(255, custom[i], v -> { custom[k] = v; base = new int[]{custom[0], custom[1], custom[2]}; applyMood("rgb:" + custom[0] + "," + custom[1] + "," + custom[2]); }));
         }
 
         page.addView(section("Hangulat küldése másnak (az aktuális szín megy)"));
@@ -491,6 +492,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     static final String[] VOTE_HEX = {"#33EE33", "#EE3333", "#6688FF", "#EECC33"};
     static final int[][] VOTE_RGB = {{0, 255, 0}, {255, 0, 0}, {0, 0, 255}, {255, 210, 0}};
     final int[] votes = {-1, -1, -1, -1};
+    int pollNonce;   // the current poll; votes of another poll (still in the air after a reset) are ignored
     final ArrayDeque<Integer> seenResets = new ArrayDeque<>();
     TextView voteView;
 
@@ -498,7 +500,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         int me = personIdx(myName());
         if (me >= 0) votes[me] = choice;
         applyMood("rgb:" + VOTE_RGB[choice][0] + "," + VOTE_RGB[choice][1] + "," + VOTE_RGB[choice][2]);
-        beacons.send(Beacons.VOTE, choice, rnd.nextInt(65536), myMask(), VOTE_RGB[choice], myName(), 6000);
+        beacons.send(Beacons.VOTE, choice, pollNonce, myMask(), VOTE_RGB[choice], myName(), 6000);
         showVotes();
     }
 
@@ -507,6 +509,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         showVotes();
         if (!broadcast) return;
         int nonce = rnd.nextInt(65536);
+        pollNonce = nonce;
         remember(seenResets, nonce);
         beacons.send(Beacons.VOTE_RESET, 0, nonce, myMask(), base, myName(), 6000);
     }
@@ -521,6 +524,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     }
 
     void onVote(Beacons.Msg m) {
+        if (m.nonce != pollNonce) return;
         int p = personIdx(m.from);
         if (p >= 0 && m.idx < VOTE_NAMES.length) { votes[p] = m.idx; showVotes(); }
     }
@@ -528,6 +532,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     void onVoteReset(Beacons.Msg m) {
         if (seenResets.contains(m.nonce)) return;
         remember(seenResets, m.nonce);
+        pollNonce = m.nonce;
         Arrays.fill(votes, -1);
         showVotes();
         toast(m.from + ": új szavazás");
@@ -537,6 +542,9 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     long reactAt;        // flash time, 0 = no game armed
     int reactNonce;
     boolean reactDone;
+    String reactBefore = "green";   // what ran before the game, put back afterwards
+    boolean reactGroup;
+    int reactSeed, reactRoster;
     Button reactBtn;
     TextView reactView;
     final Map<String, Integer> reactResults = new LinkedHashMap<>();   // wearer -> ms, -1 = tapped early
@@ -567,14 +575,26 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         reactResults.clear();
         reactView.setText("");
         showPage(3);
+        reactBefore = mood; reactGroup = groupMode; reactSeed = curNonce; reactRoster = roster;
         fresh();
+        final int ep = epoch;
         for (Lamp l : selected()) { wake(l); setColour(l, new int[]{0, 0, 0}); }
         reactBtn.setText("VÁRJ…");
+        long wait = Math.max(0, at - System.currentTimeMillis());
         ui.postDelayed(() -> {
-            if (reactNonce != nonce || reactDone) return;
+            if (reactNonce != nonce || reactDone || ep != epoch) return;   // a mood chosen meanwhile wins
             for (Lamp l : selected()) setColour(l, RGB.get("white"));
             reactBtn.setText("KOPPINTS!");
-        }, Math.max(0, at - System.currentTimeMillis()));
+        }, wait);
+        ui.postDelayed(() -> { if (reactNonce == nonce && !reactDone && ep == epoch) { reactDone = true; reactBtn.setText("—"); reactRestore(); } }, wait + 5000);   // nobody tapped
+    }
+
+    /** Put back what ran before the game: an animation restarts (with its session), a colour is re-sent. */
+    void reactRestore() {
+        if (reactBefore.startsWith("anim:")) {
+            startAnim(Integer.parseInt(reactBefore.substring(5)));
+            groupMode = reactGroup; curNonce = reactSeed; roster = reactRoster;   // same pattern as acceptInvite()
+        } else for (Lamp l : selected()) moodFrames(l, l.mood != null && !l.mood.startsWith("anim:") ? l.mood : reactBefore);
     }
 
     void reactTap() {
@@ -588,7 +608,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         int code = ms < 0 ? 0xFFFFFF : ms;
         beacons.send(Beacons.REACT, 0, reactNonce, myMask(), new int[]{(code >> 16) & 0xFF, (code >> 8) & 0xFF, code & 0xFF}, myName(), 8000);
         final int nonce = reactNonce;
-        ui.postDelayed(() -> { if (reactNonce == nonce) for (Lamp l : selected()) moodFrames(l, l.mood != null ? l.mood : mood); }, 1500);
+        ui.postDelayed(() -> { if (reactNonce == nonce) reactRestore(); }, 1500);
     }
 
     void onReactStart(Beacons.Msg m) {
@@ -620,21 +640,23 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         int nonce = rnd.nextInt(65536);
         remember(seenMoods, nonce);
         for (Lamp l : lampsOf(target)) giveMood(l, myName(), base);
-        beacons.send(Beacons.MOOD, 0, nonce, 1 << target, base, myName(), 8000);
+        beacons.send(Beacons.MOOD, target, nonce, myMask(), base, myName(), 8000);
         toast("Szín elküldve: " + PEOPLE[target]);
     }
 
     void onMood(Beacons.Msg m) {
-        if (seenMoods.contains(m.nonce) || (myMask() & m.mask) == 0) return;
+        if (seenMoods.contains(m.nonce) || m.idx >= PEOPLE.length || (myMask() & (1 << m.idx)) == 0) return;
         remember(seenMoods, m.nonce);
-        for (int i = 0; i < PEOPLE.length; i++) if ((m.mask & (1 << i)) != 0) for (Lamp l : lampsOf(i)) giveMood(l, m.from, m.colour);
+        for (Lamp l : lampsOf(m.idx)) giveMood(l, m.from, m.colour);
     }
 
     void giveMood(Lamp l, String from, int[] c) {
+        String m = "rgb:" + c[0] + "," + c[1] + "," + c[2];
+        if (anim != null || levelup != null) { fresh(); mood = m; }   // otherwise the next tick overwrites the gift
         l.queue.clear();
         l.fadeId++;
         wake(l);
-        l.mood = "rgb:" + c[0] + "," + c[1] + "," + c[2];
+        l.mood = m;
         fadeTo(l, c);
         toast(from + " színt küldött: " + l.shortName());
     }
@@ -642,6 +664,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     // ---- timed show: "Kiváló 5" lines, each a mood / effect / animation name and minutes ----
     Runnable show;
     List<String[]> showSteps;
+    boolean inShow;
 
     void showDialog() {
         android.widget.EditText box = new android.widget.EditText(this);
@@ -666,7 +689,8 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
             String name = line.substring(0, sp).trim(), mins = line.substring(sp + 1).replace(',', '.');
             String what = resolveName(name);
             if (what == null) { toast("Ismeretlen: " + name); continue; }
-            try { steps.add(new String[]{what, String.valueOf(Double.parseDouble(mins))}); } catch (NumberFormatException e) { toast("Nem perc: " + line); }
+            try { double m = Double.parseDouble(mins); if (!(m > 0)) throw new NumberFormatException(); steps.add(new String[]{what, String.valueOf(m)}); }
+            catch (NumberFormatException e) { toast("Nem perc: " + line); }
         }
         return steps;
     }
@@ -687,9 +711,12 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
             public void run() {
                 String[] step = showSteps.get(i % showSteps.size());
                 String what = step[0];
-                if (what.startsWith("mood:")) { String m = what.substring(5); if ("levelup".equals(m)) levelUp(); else applyMood(m); }
-                else if (what.startsWith("fx:")) applyMood(what);
-                else startAnim(Integer.parseInt(what.substring(5)));
+                inShow = true;   // fresh() must not stop the show that is applying this step
+                try {
+                    if (what.startsWith("mood:")) { String m = what.substring(5); if ("levelup".equals(m)) levelUp(); else applyMood(m); }
+                    else if (what.startsWith("fx:")) applyMood(what);
+                    else startAnim(Integer.parseInt(what.substring(5)));
+                } finally { inShow = false; }
                 toast("Műsor " + (i % showSteps.size() + 1) + "/" + showSteps.size());
                 i++;
                 ui.postDelayed(this, (long) (Double.parseDouble(step[1]) * 60000));
@@ -777,10 +804,16 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         page.addView(whites);
 
         page.addView(section("Színkorrekció – ha a sárga/narancs zöldes, vedd lejjebb a zöldet"));
-        page.addView(text("Zöld LED erőssége: " + gainG + " %", 0xCCFFFFFF, 12));
-        page.addView(seekBar(100, gainG, v -> { gainG = Math.max(10, v); prefs.edit().putInt("gainG", gainG).apply(); reapply(); }));
-        page.addView(text("Kék LED erőssége: " + gainB + " %", 0xCCFFFFFF, 12));
-        page.addView(seekBar(100, gainB, v -> { gainB = Math.max(10, v); prefs.edit().putInt("gainB", gainB).apply(); reapply(); }));
+        TextView gL = text("Zöld LED erőssége: " + gainG + " %", 0xCCFFFFFF, 12);
+        page.addView(gL);
+        SeekBar gS = seekBar(100, gainG, v -> { gainG = v; prefs.edit().putInt("gainG", gainG).apply(); gL.setText("Zöld LED erőssége: " + gainG + " %"); reapply(); });
+        gS.setMin(10);
+        page.addView(gS);
+        TextView bL = text("Kék LED erőssége: " + gainB + " %", 0xCCFFFFFF, 12);
+        page.addView(bL);
+        SeekBar bS = seekBar(100, gainB, v -> { gainB = v; prefs.edit().putInt("gainB", gainB).apply(); bL.setText("Kék LED erőssége: " + gainB + " %"); reapply(); });
+        bS.setMin(10);
+        page.addView(bS);
 
         Switch shakeSw = new Switch(this);
         shakeSw.setText("Rázásra véletlen hangulat  ");
@@ -982,7 +1015,9 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
 
     /** Every switch: new epoch, no leftover frames in the targeted lamps' queues, no running fades on them. */
     void fresh() {
+        if (!inShow) stopShow();   // any explicit action (tap, slider, vote, accept, attack) ends the show
         epoch++;
+        groupMode = false;         // and whatever session we were in; invitations switch it back on afterwards
         stopAnim();
         if (levelup != null) { ui.removeCallbacks(levelup); levelup = null; }
         for (Lamp l : selected()) { l.fadeId++; l.queue.clear(); }
@@ -1154,9 +1189,10 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
                 List<Lamp> sel = ordered();
                 int total = Math.max(1, sel.size());
                 long now = System.currentTimeMillis();
-                int clockStep = (int) ((now / animWait) % 1000000);   // same on every phone whose clock is right
-                int[] shared = Frames.isPerLamp(idx) ? null : Frames.shared(idx, groupMode ? clockStep : animStep, curNonce);
-                int wait = groupMode || shared == null ? animWait : shared[3];   // a session ticks on a fixed grid so phones stay together
+                int clockStep = (int) ((now / animWait) % 1000000);   // per-lamp animations: same on every phone whose clock is right
+                long[] at = groupMode && !Frames.isPerLamp(idx) ? Frames.stepAt(idx, now, curNonce) : null;   // shared ones keep their own holds
+                int[] shared = Frames.isPerLamp(idx) ? null : Frames.shared(idx, at != null ? (int) at[0] : animStep, curNonce);
+                int wait = shared != null ? shared[3] : animWait;
                 int rosterSize = Math.max(1, Integer.bitCount(roster));
                 for (int k = 0; k < sel.size(); k++) {
                     Lamp l = sel.get(k);
@@ -1167,10 +1203,11 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
                     if (l.queue.size() < 3) setColour(l, new int[]{f[0], f[1], f[2]});
                 }
                 animStep++;
-                ui.postDelayed(this, groupMode ? wait - (now % wait) : wait);   // group: wake on the clock boundary
+                long next = at != null ? at[1] - now : groupMode ? wait - (now % wait) : wait;   // group: wake on the clock boundary
+                ui.postDelayed(this, Math.max(1, next));
             }
         };
-        anim.run();
+        ui.post(anim);   // first tick after the caller returned, so an invitation's groupMode/nonce/roster are already set
     }
 
     /** Position of PEOPLE[i] inside the roster (people in the group, PEOPLE order), -1 when not in it. */
@@ -1227,6 +1264,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     // ---------------------------------------------------------------- group sessions over Beacons
 
     void sendInvite(int idx) {
+        stopShow();
         startAnim(idx);
         groupMode = true;
         myNonce = curNonce = rnd.nextInt(65536);
@@ -1285,6 +1323,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     }
 
     void acceptInvite(Beacons.Msg m) {
+        stopShow();
         int known = groupMode ? roster : 0;   // a host switching sessions keeps the people it already knows
         showPage(2);
         base = m.colour;   // run the chase in the inviter's colour so all lamps match
@@ -1330,7 +1369,6 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         toast(from + " megtámadta: " + l.shortName() + " (−1)");
         boolean interrupted = anim != null || levelup != null;
         fresh();   // stops any animation (and the mic) phone-wide, new epoch
-        groupMode = false;
         mood = "hp";
         if (interrupted) for (Lamp x : link.lamps.values()) if (x != l && x.connected()) moodFrames(x, "hp");   // siblings must not freeze on their last animation frame
         l.fadeId++;

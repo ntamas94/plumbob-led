@@ -23,7 +23,7 @@ import java.util.Collections;
 final class Beacons {
     static final int COMPANY = 0xFFFF;
     static final int INVITE = 1, ACCEPT = 2, ATTACK = 3, ACK = 4, PRESENCE = 5,   // PRESENCE: "these wearers are on my phone", every 15 s
-        MOOD = 6,          // give someone a colour: mask = target wearers, colour = rgb
+        MOOD = 6,          // give someone a colour: idx = target wearer, mask = sender's wearers, colour = rgb
         VOTE_RESET = 7,    // new poll, everybody's answer cleared
         VOTE = 8,          // idx = answer (0..3) of the sender
         REACT_START = 9,   // reaction game: colour bytes = flash time, wall clock ms mod 2^24
@@ -31,7 +31,7 @@ final class Beacons {
         LAST = REACT;
     /** High nibble of byte 0. Bump it whenever Frames' deterministic maths or this payload changes, so older
      *  app versions ignore us instead of joining a session they would run differently. v17 and older: nibble 0. */
-    static final int PROTOCOL = 0x10;
+    static final int PROTOCOL = 0x20;   // v17-: 0, v18-v23: 0x10 (Random shared animations, per-lamp invites only)
 
     static final class Msg {
         final int kind, idx, nonce, mask;
