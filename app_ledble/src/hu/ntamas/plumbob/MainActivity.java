@@ -100,8 +100,8 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     LinearLayout[] pages;
     Button[] tabs;
     Spinner who;
-    final List<String> whoMacs = new ArrayList<>();   // dropdown position - 1 -> MAC
-    String whoSel;                                   // chosen lamp's MAC, null = everyone
+    final List<String> whoMacs = new ArrayList<>();   // dropdown position -> MAC
+    String whoSel;                                   // the chosen lamp's MAC, null only while no lamp is known
     TextView status, seenView, hpView;
     SeekBar moodBar;
 
@@ -301,7 +301,8 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         who.setLayoutParams(weighted());
         who.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             public void onItemSelected(AdapterView<?> a, View v, int pos, long id) {
-                whoSel = pos <= 0 || pos > whoMacs.size() ? null : whoMacs.get(pos - 1);
+                whoSel = pos < 0 || pos >= whoMacs.size() ? null : whoMacs.get(pos);
+                showHp(false);
             }
             public void onNothingSelected(AdapterView<?> a) { }
         });
@@ -404,7 +405,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
             grid.addView(b);
         }
         page.addView(grid);
-        page.addView(hint("Sima nyomás: a csoport-animáció a saját lámpáid közt fut (2 lámpa = oda-vissza). Hosszú nyomás: meghívást küld a közeli telefonoknak (Bluetooth); akik elfogadják, azoknál is elindul, óra-szinkronban, a Kié?-nevek sorrendjében."));
+        page.addView(hint("Csoport-animáció hosszú nyomásra: meghívást küld a közeli telefonoknak (Bluetooth); akik elfogadják, azoknál is elindul, óra-szinkronban, a Kié?-nevek sorrendjében."));
     }
 
     void buildLifePage(LinearLayout page) {
@@ -430,7 +431,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         GridLayout maxGrid = grid(5);
         for (int m : new int[]{10, 20, 30, 50, 100}) maxGrid.addView(pill("" + m, "#DDDDDD", 14, dp(44), () -> setHpMax(m)));
         page.addView(maxGrid);
-        page.addView(hint("A gombok a „Kinek” szerint kiválasztott lámpá(k)ra hatnak. Életerő lámpánként (személyenként) számolódik."));
+        page.addView(hint("A gombok a „Kinek” szerint kiválasztott lámpára hatnak. Életerő lámpánként (személyenként) számolódik."));
         TextView atkLabel = text("Támadás (−1 HP a másik telefonján, Bluetooth-on) – csak aki itt van", Color.WHITE, 14);
         atkLabel.setPadding(0, dp(10), 0, 0);
         page.addView(atkLabel);
@@ -580,18 +581,20 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         }).show();
     }
 
-    // Refill the "Kinek" dropdown from the known lamps, keeping the current choice if that lamp is still around.
+    // Refill the "Kinek" dropdown from the known lamps: exactly one lamp is chosen (the first one by default),
+    // keeping the current choice if that lamp is still around.
     void rebuildWho() {
         whoMacs.clear();
         List<String> items = new ArrayList<>();
-        items.add("Mindenkinek");
         for (Lamp l : rows.keySet()) { whoMacs.add(l.mac()); items.add(l.label()); }
+        if (items.isEmpty()) items.add("– nincs lámpa –");
         ArrayAdapter<String> ad = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
         ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         int keep = whoSel == null ? -1 : whoMacs.indexOf(whoSel);
-        if (keep < 0) whoSel = null;
+        if (keep < 0) keep = 0;
+        whoSel = whoMacs.isEmpty() ? null : whoMacs.get(keep);
         who.setAdapter(ad);
-        who.setSelection(keep < 0 ? 0 : keep + 1, false);
+        who.setSelection(keep, false);
     }
 
     void showPage(int i) {
@@ -648,7 +651,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
 
     // ---------------------------------------------------------------- lamp selection
 
-    boolean wanted(Lamp l) { return whoSel == null || whoSel.equals(l.mac()); }
+    boolean wanted(Lamp l) { return whoSel != null && whoSel.equals(l.mac()); }
 
     List<Lamp> selected() {
         List<Lamp> r = new ArrayList<>();
