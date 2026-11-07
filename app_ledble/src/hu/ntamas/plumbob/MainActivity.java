@@ -100,8 +100,9 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
     LinearLayout[] pages;
     Button[] tabs;
     Spinner who;
-    final List<String> whoMacs = new ArrayList<>();   // dropdown position -> MAC
+    final List<String> whoMacs = new ArrayList<>();   // dropdown position - 1 -> MAC (position 0 = everyone)
     String whoSel;                                   // the chosen lamp's MAC, null only while no lamp is known
+    boolean whoAll;                                  // "Mindenkinek": every connected lamp at once
     TextView status, seenView, hpView;
     SeekBar moodBar;
 
@@ -308,7 +309,9 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         who.setLayoutParams(weighted());
         who.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             public void onItemSelected(AdapterView<?> a, View v, int pos, long id) {
-                whoSel = pos < 0 || pos >= whoMacs.size() ? null : whoMacs.get(pos);
+                if (whoMacs.isEmpty()) { whoAll = false; whoSel = null; }
+                else if (pos == 0) whoAll = true;
+                else if (pos <= whoMacs.size()) { whoAll = false; whoSel = whoMacs.get(pos - 1); }
                 showHp(false);
             }
             public void onNothingSelected(AdapterView<?> a) { }
@@ -458,7 +461,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         GridLayout maxGrid = grid(5);
         for (int m : new int[]{10, 20, 30, 50, 100}) maxGrid.addView(pill("" + m, "#DDDDDD", 14, dp(44), () -> setHpMax(m)));
         page.addView(maxGrid);
-        page.addView(hint("A gombok a „Kinek” szerint kiválasztott lámpára hatnak. Életerő lámpánként (személyenként) számolódik."));
+        page.addView(hint("A gombok a „Kinek” szerint kiválasztott lámpára (vagy Mindenkinek: az összesre) hatnak. Életerő lámpánként (személyenként) számolódik."));
         TextView atkLabel = text("Támadás (−1 HP a másik telefonján, Bluetooth-on) – csak aki itt van", Color.WHITE, 14);
         atkLabel.setPadding(0, dp(10), 0, 0);
         page.addView(atkLabel);
@@ -891,20 +894,21 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
         }).show();
     }
 
-    // Refill the "Kinek" dropdown from the known lamps: exactly one lamp is chosen (the first one by default),
-    // keeping the current choice if that lamp is still around.
+    // Refill the "Kinek" dropdown from the known lamps: "Mindenkinek" (all lamps at once) or exactly one lamp
+    // (the first one by default), keeping the current choice if it is still around.
     void rebuildWho() {
         whoMacs.clear();
         List<String> items = new ArrayList<>();
         for (Lamp l : rows.keySet()) { whoMacs.add(l.mac()); items.add(l.label()); }
-        if (items.isEmpty()) items.add("– nincs lámpa –");
+        if (items.isEmpty()) { items.add("– nincs lámpa –"); whoAll = false; }
+        else items.add(0, "Mindenkinek");
         ArrayAdapter<String> ad = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, items);
         ad.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         int keep = whoSel == null ? -1 : whoMacs.indexOf(whoSel);
         if (keep < 0) keep = 0;
         whoSel = whoMacs.isEmpty() ? null : whoMacs.get(keep);
         who.setAdapter(ad);
-        who.setSelection(keep, false);
+        who.setSelection(whoMacs.isEmpty() ? 0 : whoAll ? 0 : keep + 1, false);
     }
 
     void showPage(int i) {
@@ -961,7 +965,7 @@ public class MainActivity extends Activity implements LampLink.Listener, Beacons
 
     // ---------------------------------------------------------------- lamp selection
 
-    boolean wanted(Lamp l) { return whoSel != null && whoSel.equals(l.mac()); }
+    boolean wanted(Lamp l) { return whoAll || whoSel != null && whoSel.equals(l.mac()); }
 
     List<Lamp> selected() {
         List<Lamp> r = new ArrayList<>();
